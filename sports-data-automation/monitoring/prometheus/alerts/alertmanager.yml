@@ -1,0 +1,121 @@
+global:
+  resolve_timeout: 5m
+  smtp_smarthost: 'localhost:587'
+  smtp_from: 'alerts@sports-automation.local'
+
+route:
+  group_by: ['alertname', 'component', 'severity']
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+  receiver: 'default'
+  routes:
+    # Critical alerts - page immediately
+    - match:
+        severity: critical
+      receiver: 'pager'
+      continue: true
+
+    # Page alerts - page immediately
+    - match:
+        severity: page
+      receiver: 'pager'
+      continue: true
+
+    # Warning alerts - notify with delay
+    - match:
+        severity: warning
+      receiver: 'warning'
+      group_wait: 5m
+      group_interval: 15m
+
+    # Business alerts - notify business team
+    - match:
+        component: business
+      receiver: 'business'
+      group_wait: 10m
+      group_interval: 1h
+
+    # Info alerts - low priority
+    - match:
+        severity: info
+      receiver: 'info'
+      group_wait: 30m
+      group_interval: 4h
+
+receivers:
+  - name: 'default'
+    email_configs:
+      - to: 'team@sports-automation.local'
+        send_resolved: true
+        headers:
+          subject: '[Sports Automation] {{ .GroupLabels.alertname }}'
+    slack_configs:
+      - api_url: '{{ .Env.SLACK_WEBHOOK_URL }}'
+        channel: '#alerts'
+        send_resolved: true
+        title: '{{ .GroupLabels.alertname }}'
+        text: '{{ range .Alerts }}{{ .Annotations.description }}\n{{ end }}'
+
+  - name: 'pager'
+    email_configs:
+      - to: 'oncall@sports-automation.local'
+        send_resolved: true
+        headers:
+          subject: '[PAGE] {{ .GroupLabels.alertname }}'
+    slack_configs:
+      - api_url: '{{ .Env.SLACK_WEBHOOK_URL }}'
+        channel: '#oncall'
+        send_resolved: true
+        title: '🚨 [PAGE] {{ .GroupLabels.alertname }}'
+        text: '{{ range .Alerts }}{{ .Annotations.description }}\nRunbook: {{ .Annotations.runbook_url }}\n{{ end }}'
+    webhook_configs:
+      - url: 'http://pagerduty-webhook:8080/alert'
+        send_resolved: true
+
+  - name: 'warning'
+    email_configs:
+      - to: 'team@sports-automation.local'
+        send_resolved: true
+        headers:
+          subject: '[WARNING] {{ .GroupLabels.alertname }}'
+    slack_configs:
+      - api_url: '{{ .Env.SLACK_WEBHOOK_URL }}'
+        channel: '#alerts'
+        send_resolved: true
+        title: '⚠️ [WARNING] {{ .GroupLabels.alertname }}'
+        text: '{{ range .Alerts }}{{ .Annotations.description }}\nRunbook: {{ .Annotations.runbook_url }}\n{{ end }}'
+
+  - name: 'business'
+    email_configs:
+      - to: 'business@sports-automation.local'
+        send_resolved: true
+        headers:
+          subject: '[Business KPI] {{ .GroupLabels.alertname }}'
+    slack_configs:
+      - api_url: '{{ .Env.SLACK_WEBHOOK_URL }}'
+        channel: '#business-alerts'
+        send_resolved: true
+        title: '📊 [Business] {{ .GroupLabels.alertname }}'
+        text: '{{ range .Alerts }}{{ .Annotations.description }}\nRunbook: {{ .Annotations.runbook_url }}\n{{ end }}'
+
+  - name: 'info'
+    slack_configs:
+      - api_url: '{{ .Env.SLACK_WEBHOOK_URL }}'
+        channel: '#info-alerts'
+        send_resolved: true
+        title: 'ℹ️ [INFO] {{ .GroupLabels.alertname }}'
+        text: '{{ range .Alerts }}{{ .Annotations.description }}\n{{ end }}'
+
+inhibit_rules:
+  - source_match:
+      severity: 'critical'
+    target_match:
+      severity: 'warning'
+    equal: ['alertname', 'component']
+
+  - source_match:
+      alertname: 'IngestionCriticalLatency'
+    target_match:
+      alertname: 'IngestionHighLatency'
+    equal: ['component']

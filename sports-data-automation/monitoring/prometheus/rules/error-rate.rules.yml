@@ -1,0 +1,63 @@
+groups:
+  - name: error-rate-alerts
+    interval: 30s
+    rules:
+      # Ingestion error rate
+      - alert: IngestionHighErrorRate
+        expr: |
+          sum(rate(events_validated_total{result="invalid"}[5m])) by (type)
+          /
+          sum(rate(events_validated_total[5m])) by (type)
+          > 0.05
+        for: 5m
+        labels:
+          severity: warning
+          component: ingestion
+        annotations:
+          summary: "High ingestion validation error rate"
+          description: "Ingestion {{ $labels.type }} error rate is {{ $value | printf \"%.1f\" }}%"
+          runbook_url: "https://github.com/yourorg/sports-data-automation/docs/runbooks/ingestion-high-error-rate.md"
+
+      - alert: IngestionCriticalErrorRate
+        expr: |
+          sum(rate(events_validated_total{result="invalid"}[5m])) by (type)
+          /
+          sum(rate(events_validated_total[5m])) by (type)
+          > 0.20
+        for: 2m
+        labels:
+          severity: critical
+          component: ingestion
+        annotations:
+          summary: "Critical ingestion validation error rate"
+          description: "Ingestion {{ $labels.type }} error rate is {{ $value | printf \"%.1f\" }}%"
+          runbook_url: "https://github.com/yourorg/sports-data-automation/docs/runbooks/ingestion-critical-error-rate.md"
+
+      # n8n webhook errors
+      - alert: N8nWebhookErrors
+        expr: |
+          sum(rate(n8n_webhook_errors_total[5m])) by (endpoint) > 0.1
+        for: 2m
+        labels:
+          severity: warning
+          component: n8n
+        annotations:
+          summary: "n8n webhook errors detected"
+          description: "n8n webhook {{ $labels.endpoint }} error rate is {{ $value | printf \"%.2f\" }}/s"
+          runbook_url: "https://github.com/yourorg/sports-data-automation/docs/runbooks/n8n-webhook-errors.md"
+
+      # Deduplication issues
+      - alert: HighDuplicateRate
+        expr: |
+          sum(rate(events_deduplicated_total{result="duplicate"}[5m])) by (type)
+          /
+          sum(rate(events_deduplicated_total[5m])) by (type)
+          > 0.50
+        for: 10m
+        labels:
+          severity: info
+          component: ingestion
+        annotations:
+          summary: "High duplicate rate detected"
+          description: "{{ $labels.type }} duplicate rate is {{ $value | printf \"%.1f\" }}% - possible replay or provider issue"
+          runbook_url: "https://github.com/yourorg/sports-data-automation/docs/runbooks/high-duplicate-rate.md"

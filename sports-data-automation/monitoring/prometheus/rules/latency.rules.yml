@@ -1,0 +1,62 @@
+groups:
+  - name: latency-alerts
+    interval: 30s
+    rules:
+      # Ingestion latency alerts
+      - alert: IngestionHighLatency
+        expr: |
+          histogram_quantile(0.95,
+            sum(rate(processing_latency_seconds_bucket[5m])) by (le, type)
+          ) > 1
+        for: 5m
+        labels:
+          severity: warning
+          component: ingestion
+        annotations:
+          summary: "High ingestion latency (p95 > 1s)"
+          description: "Ingestion {{ $labels.type }} p95 latency is {{ $value | printf \"%.2f\" }}s"
+          runbook_url: "https://github.com/yourorg/sports-data-automation/docs/runbooks/ingestion-high-latency.md"
+
+      - alert: IngestionCriticalLatency
+        expr: |
+          histogram_quantile(0.99,
+            sum(rate(processing_latency_seconds_bucket[5m])) by (le, type)
+          ) > 5
+        for: 2m
+        labels:
+          severity: critical
+          component: ingestion
+        annotations:
+          summary: "Critical ingestion latency (p99 > 5s)"
+          description: "Ingestion {{ $labels.type }} p99 latency is {{ $value | printf \"%.2f\" }}s"
+          runbook_url: "https://github.com/yourorg/sports-data-automation/docs/runbooks/ingestion-critical-latency.md"
+
+      # n8n webhook latency
+      - alert: N8nWebhookHighLatency
+        expr: |
+          histogram_quantile(0.95,
+            sum(rate(n8n_webhook_latency_seconds_bucket[5m])) by (le, endpoint)
+          ) > 2
+        for: 5m
+        labels:
+          severity: warning
+          component: n8n
+        annotations:
+          summary: "High n8n webhook latency"
+          description: "n8n webhook {{ $labels.endpoint }} p95 latency is {{ $value | printf \"%.2f\" }}s"
+          runbook_url: "https://github.com/yourorg/sports-data-automation/docs/runbooks/n8n-webhook-latency.md"
+
+      # Provider latency
+      - alert: ProviderHighLatency
+        expr: |
+          histogram_quantile(0.95,
+            sum(rate(provider_latency_seconds_bucket[5m])) by (le, provider, type)
+          ) > 10
+        for: 5m
+        labels:
+          severity: warning
+          component: provider
+        annotations:
+          summary: "High provider latency"
+          description: "Provider {{ $labels.provider }} {{ $labels.type }} p95 latency is {{ $value | printf \"%.2f\" }}s"
+          runbook_url: "https://github.com/yourorg/sports-data-automation/docs/runbooks/provider-high-latency.md"

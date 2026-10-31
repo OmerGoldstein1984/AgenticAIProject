@@ -1,0 +1,16 @@
+{
+  "version": 2,
+  "installedAt": "2026-10-31T16:55:51.572Z",
+  "files": {
+    "C:\\projects\\Agentic ai\\LSports_Interview_Project\\.claude\\settings.json": {
+      "plugins": [
+        "ruflo-mods@ruflo",
+        "ruflo-swarm@ruflo",
+        "ruflo-console@ruflo"
+      ],
+      "marketplace": true,
+      "env": true,
+      "claudeInstalled": []
+    }
+  }
+}

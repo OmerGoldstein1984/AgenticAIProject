@@ -1,0 +1,260 @@
+<figure>
+  <svg viewBox="0 0 1200 720" role="img" aria-label="Sports Data Automation Platform architecture showing data flow from mock providers through ingestion, n8n orchestration, processing engine, to output systems with observability plane" style="max-width: 100%; height: auto; font-family: system-ui, sans-serif;">
+    <defs>
+      <marker id="arrow" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+        <polygon points="0 0, 10 3.5, 0 7" fill="currentColor"/>
+      </marker>
+      <marker id="arrow-dashed" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+        <polygon points="0 0, 10 3.5, 0 7" fill="currentColor"/>
+      </marker>
+      <linearGradient id="n8n-gradient" x1="0%" y1="0%" x2="0%" y2="100%">
+        <stop offset="0%" stop-color="#f59e0b" stop-opacity="0.15"/>
+        <stop offset="100%" stop-color="#f59e0b" stop-opacity="0.05"/>
+      </linearGradient>
+      <linearGradient id="obs-gradient" x1="0%" y1="0%" x2="0%" y2="100%">
+        <stop offset="0%" stop-color="#06b6d4" stop-opacity="0.15"/>
+        <stop offset="100%" stop-color="#06b6d4" stop-opacity="0.05"/>
+      </linearGradient>
+    </defs>
+
+    <!-- Background layers -->
+    <rect x="20" y="20" width="1160" height="180" rx="8" fill="none" stroke="#e5e7eb" stroke-width="1"/>
+    <text x="40" y="40" font-size="13" font-weight="600" fill="#6b7280">MOCK DATA PROVIDERS (Simulated LSports Feeds)</text>
+
+    <rect x="20" y="220" width="1160" height="160" rx="8" fill="url(#n8n-gradient)" stroke="#f59e0b" stroke-width="1.5"/>
+    <text x="40" y="240" font-size="13" font-weight="600" fill="#92400e">N8N ORCHESTRATION LAYER (Queue Mode + Redis Streams)</text>
+
+    <rect x="20" y="400" width="1160" height="140" rx="8" fill="none" stroke="#e5e7eb" stroke-width="1"/>
+    <text x="40" y="420" font-size="13" font-weight="600" fill="#6b7280">OUTPUT SYSTEMS (Mock SaaS Integrations)</text>
+
+    <rect x="20" y="560" width="1160" height="140" rx="8" fill="url(#obs-gradient)" stroke="#06b6d4" stroke-width="1.5"/>
+    <text x="40" y="580" font-size="13" font-weight="600" fill="#0e7490">OBSERVABILITY & CONTROL PLANE</text>
+
+    <!-- Mock Providers Row -->
+    <g font-size="11">
+      <!-- Odds Feed -->
+      <rect x="50" y="60" width="180" height="110" rx="6" fill="#fff" stroke="#d1d5db" stroke-width="1"/>
+      <text x="140" y="80" text-anchor="middle" font-weight="600" fill="#111827">Live Odds Feed</text>
+      <text x="140" y="100" text-anchor="middle" fill="#6b7280">WebSocket</text>
+      <text x="140" y="115" text-anchor="middle" fill="#6b7280">500ms–2s updates</text>
+      <text x="140" y="135" text-anchor="middle" fill="#6b7280">Decimal/American/</text>
+      <text x="140" y="150" text-anchor="middle" fill="#6b7280">Fractional formats</text>
+
+      <!-- Event Feed -->
+      <rect x="260" y="60" width="180" height="110" rx="6" fill="#fff" stroke="#d1d5db" stroke-width="1"/>
+      <text x="350" y="80" text-anchor="middle" font-weight="600" fill="#111827">Event Feed</text>
+      <text x="350" y="100" text-anchor="middle" fill="#6b7280">REST API</text>
+      <text x="350" y="115" text-anchor="middle" fill="#6b7280">Goals, cards,</text>
+      <text x="350" y="130" text-anchor="middle" fill="#6b7280">substitutions, injuries</text>
+
+      <!-- Settlement Feed -->
+      <rect x="470" y="60" width="180" height="110" rx="6" fill="#fff" stroke="#d1d5db" stroke-width="1"/>
+      <text x="560" y="80" text-anchor="middle" font-weight="600" fill="#111827">Settlement Feed</text>
+      <text x="560" y="100" text-anchor="middle" fill="#6b7280">Batch REST API</text>
+      <text x="560" y="115" text-anchor="middle" fill="#6b7280">Post-match results</text>
+      <text x="560" y="130" text-anchor="middle" fill="#6b7280">Official outcomes</text>
+
+      <!-- Historical Replay -->
+      <rect x="680" y="60" width="180" height="110" rx="6" fill="#fff" stroke="#d1d5db" stroke-width="1"/>
+      <text x="770" y="80" text-anchor="middle" font-weight="600" fill="#111827">Historical Replay</text>
+      <text x="770" y="100" text-anchor="middle" fill="#6b7280">CLI Tool</text>
+      <text x="770" y="115" text-anchor="middle" fill="#6b7280">Backtesting &</text>
+      <text x="770" y="130" text-anchor="middle" fill="#6b7280">shadow mode</text>
+
+      <!-- Provider Schema Registry -->
+      <rect x="890" y="60" width="180" height="110" rx="6" fill="#fff" stroke="#d1d5db" stroke-width="1"/>
+      <text x="980" y="80" text-anchor="middle" font-weight="600" fill="#111827">Schema Registry</text>
+      <text x="980" y="100" text-anchor="middle" fill="#6b7280">JSON Schema per</text>
+      <text x="980" y="115" text-anchor="middle" fill="#6b7280">provider + version</text>
+      <text x="980" y="130" text-anchor="middle" fill="#6b7280">Contract testing</text>
+
+      <!-- Arrows from providers to ingestion -->
+      <line x1="140" y1="170" x2="140" y2="220" stroke="#9ca3af" stroke-width="2" marker-end="url(#arrow)"/>
+      <line x1="350" y1="170" x2="350" y2="220" stroke="#9ca3af" stroke-width="2" marker-end="url(#arrow)"/>
+      <line x1="560" y1="170" x2="560" y2="220" stroke="#9ca3af" stroke-width="2" marker-end="url(#arrow)"/>
+      <line x1="770" y1="170" x2="770" y2="220" stroke="#9ca3af" stroke-width="2" marker-end="url(#arrow)"/>
+      <line x1="980" y1="170" x2="980" y2="220" stroke="#9ca3af" stroke-width="2" marker-end="url(#arrow)"/>
+    </g>
+
+    <!-- Ingestion Service (Python) - sits between providers and n8n -->
+    <rect x="1080" y="60" width="80" height="110" rx="6" fill="#e0f2fe" stroke="#0369a1" stroke-width="1.5"/>
+    <text x="1120" y="80" text-anchor="middle" font-weight="600" fill="#0369a1" font-size="11">Ingestion</text>
+    <text x="1120" y="95" text-anchor="middle" fill="#0369a1" font-size="10">Service</text>
+    <text x="1120" y="115" text-anchor="middle" fill="#0369a1" font-size="10">(FastAPI)</text>
+    <text x="1120" y="135" text-anchor="middle" fill="#0369a1" font-size="10">Normalize</text>
+    <text x="1120" y="150" text-anchor="middle" fill="#0369a1" font-size="10">Validate</text>
+    <text x="1120" y="165" text-anchor="middle" fill="#0369a1" font-size="10">Deduplicate</text>
+
+    <line x1="1120" y1="170" x2="1120" y2="220" stroke="#0369a1" stroke-width="2" marker-end="url(#arrow)"/>
+
+    <!-- n8n Orchestration Layer - Custom Nodes -->
+    <g font-size="11">
+      <!-- Event Router -->
+      <rect x="50" y="260" width="200" height="100" rx="6" fill="#fff" stroke="#f59e0b" stroke-width="1.5"/>
+      <text x="150" y="280" text-anchor="middle" font-weight="600" fill="#92400e">Event Router</text>
+      <text x="150" y="300" text-anchor="middle" fill="#6b7280">Custom Node</text>
+      <text x="150" y="315" text-anchor="middle" fill="#6b7280">Priority Queue</text>
+      <text x="150" y="330" text-anchor="middle" fill="#6b7280">Content-based routing</text>
+
+      <!-- Odds Normalizer -->
+      <rect x="280" y="260" width="200" height="100" rx="6" fill="#fff" stroke="#f59e0b" stroke-width="1.5"/>
+      <text x="380" y="280" text-anchor="middle" font-weight="600" fill="#92400e">Odds Normalizer</text>
+      <text x="380" y="300" text-anchor="middle" fill="#6b7280">Custom Node</text>
+      <text x="380" y="315" text-anchor="middle" fill="#6b7280">3-format conversion</text>
+      <text x="380" y="330" text-anchor="middle" fill="#6b7280">Arbitrage detection</text>
+
+      <!-- Settlement Worker -->
+      <rect x="510" y="260" width="200" height="100" rx="6" fill="#fff" stroke="#f59e0b" stroke-width="1.5"/>
+      <text x="610" y="280" text-anchor="middle" font-weight="600" fill="#92400e">Settlement Worker</text>
+      <text x="610" y="300" text-anchor="middle" fill="#6b7280">Custom Node</text>
+      <text x="610" y="315" text-anchor="middle" fill="#6b7280">Rule DSL Engine</text>
+      <text x="610" y="330" text-anchor="middle" fill="#6b7280">Won/Lost/Void/Half</text>
+
+      <!-- LLM Alert Generator -->
+      <rect x="740" y="260" width="200" height="100" rx="6" fill="#fff" stroke="#f59e0b" stroke-width="1.5"/>
+      <text x="840" y="280" text-anchor="middle" font-weight="600" fill="#92400e">LLM Alert Gen</text>
+      <text x="840" y="300" text-anchor="middle" fill="#6b7280">Custom Node</text>
+      <text x="840" y="315" text-anchor="middle" fill="#6b7280">Structured Output</text>
+      <text x="840" y="330" text-anchor="middle" fill="#6b7280">Confidence Scoring</text>
+
+      <!-- Reconciliation Job -->
+      <rect x="970" y="260" width="180" height="100" rx="6" fill="#fff" stroke="#f59e0b" stroke-width="1.5" stroke-dasharray="4 4"/>
+      <text x="1060" y="280" text-anchor="middle" font-weight="600" fill="#92400e">Reconciliation</text>
+      <text x="1060" y="300" text-anchor="middle" fill="#6b7280">Scheduled Job</text>
+      <text x="1060" y="315" text-anchor="middle" fill="#6b7280">Daily Batch</text>
+      <text x="1060" y="330" text-anchor="middle" fill="#6b7280">Checksum Compare</text>
+
+      <!-- Internal n8n connections -->
+      <line x1="250" y1="310" x2="280" y2="310" stroke="#f59e0b" stroke-width="1.5" marker-end="url(#arrow)" stroke-dasharray="4 4"/>
+      <line x1="480" y1="310" x2="510" y2="310" stroke="#f59e0b" stroke-width="1.5" marker-end="url(#arrow)" stroke-dasharray="4 4"/>
+      <line x1="710" y1="310" x2="740" y2="310" stroke="#f59e0b" stroke-width="1.5" marker-end="url(#arrow)" stroke-dasharray="4 4"/>
+      <line x1="940" y1="310" x2="970" y2="310" stroke="#f59e0b" stroke-width="1.5" marker-end="url(#arrow)" stroke-dasharray="4 4"/>
+    </g>
+
+    <!-- Redis Streams (Queue) -->
+    <rect x="50" y="370" width="1100" height="20" rx="4" fill="#fef3c7" stroke="#f59e0b" stroke-width="1"/>
+    <text x="600" y="385" text-anchor="middle" font-size="11" fill="#92400e" font-weight="500">Redis Streams (Queue Mode) — Consumer Groups per Workflow — Exactly-Once Semantics — Dead Letter Stream</text>
+
+    <!-- Output Systems Row -->
+    <g font-size="11">
+      <!-- Sportsbook CRM -->
+      <rect x="50" y="440" width="200" height="80" rx="6" fill="#fff" stroke="#d1d5db" stroke-width="1"/>
+      <text x="150" y="460" text-anchor="middle" font-weight="600" fill="#111827">Sportsbook CRM</text>
+      <text x="150" y="478" text-anchor="middle" fill="#6b7280">Mock HubSpot/</text>
+      <text x="150" y="494" text-anchor="middle" fill="#6b7280">Salesforce</text>
+      <text x="150" y="510" text-anchor="middle" fill="#6b7280">OAuth + Webhooks</text>
+
+      <!-- Risk Management -->
+      <rect x="280" y="440" width="200" height="80" rx="6" fill="#fff" stroke="#d1d5db" stroke-width="1"/>
+      <text x="380" y="460" text-anchor="middle" font-weight="600" fill="#111827">Risk Mgmt</text>
+      <text x="380" y="478" text-anchor="middle" fill="#6b7280">Exposure calc</text>
+      <text x="380" y="494" text-anchor="middle" fill="#6b7280">Limit enforcement</text>
+      <text x="380" y="510" text-anchor="middle" fill="#6b7280">Real-time</text>
+
+      <!-- Reporting Warehouse -->
+      <rect x="510" y="440" width="200" height="80" rx="6" fill="#fff" stroke="#d1d5db" stroke-width="1"/>
+      <text x="610" y="460" text-anchor="middle" font-weight="600" fill="#111827">Reporting</text>
+      <text x="610" y="478" text-anchor="middle" fill="#6b7280">TimescaleDB /</text>
+      <text x="610" y="494" text-anchor="middle" fill="#6b7280">ClickHouse</text>
+      <text x="610" y="510" text-anchor="middle" fill="#6b7280">Analytics</text>
+
+      <!-- Notification Service -->
+      <rect x="740" y="440" width="200" height="80" rx="6" fill="#fff" stroke="#d1d5db" stroke-width="1"/>
+      <text x="840" y="460" text-anchor="middle" font-weight="600" fill="#111827">Notifications</text>
+      <text x="840" y="478" text-anchor="middle" fill="#6b7280">Email, Slack,</text>
+      <text x="840" y="494" text-anchor="middle" fill="#6b7280">SMS, Push</text>
+      <text x="840" y="510" text-anchor="middle" fill="#6b7280">Template Engine</text>
+
+      <!-- Audit/Compliance -->
+      <rect x="970" y="440" width="180" height="80" rx="6" fill="#fff" stroke="#d1d5db" stroke-width="1"/>
+      <text x="1060" y="460" text-anchor="middle" font-weight="600" fill="#111827">Audit Trail</text>
+      <text x="1060" y="478" text-anchor="middle" fill="#6b7280">Immutable log</text>
+      <text x="1060" y="494" text-anchor="middle" fill="#6b7280">Regulatory</text>
+      <text x="1060" y="510" text-anchor="middle" fill="#6b7280">compliance</text>
+
+      <!-- Arrows from n8n to outputs -->
+      <line x1="150" y1="360" x2="150" y2="440" stroke="#9ca3af" stroke-width="2" marker-end="url(#arrow)"/>
+      <line x1="380" y1="360" x2="380" y2="440" stroke="#9ca3af" stroke-width="2" marker-end="url(#arrow)"/>
+      <line x1="610" y1="360" x2="610" y2="440" stroke="#9ca3af" stroke-width="2" marker-end="url(#arrow)"/>
+      <line x1="840" y1="360" x2="840" y2="440" stroke="#9ca3af" stroke-width="2" marker-end="url(#arrow)"/>
+      <line x1="1060" y1="360" x2="1060" y2="440" stroke="#9ca3af" stroke-width="2" marker-end="url(#arrow)"/>
+    </g>
+
+    <!-- Observability Plane -->
+    <g font-size="11">
+      <!-- Prometheus -->
+      <rect x="50" y="600" width="200" height="80" rx="6" fill="#fff" stroke="#06b6d4" stroke-width="1.5"/>
+      <text x="150" y="620" text-anchor="middle" font-weight="600" fill="#0e7490">Prometheus</text>
+      <text x="150" y="638" text-anchor="middle" fill="#6b7280">Custom Metrics</text>
+      <text x="150" y="654" text-anchor="middle" fill="#6b7280">Latency p50/p95/p99</text>
+      <text x="150" y="670" text-anchor="middle" fill="#6b7280">Business KPIs</text>
+
+      <!-- Grafana -->
+      <rect x="280" y="600" width="200" height="80" rx="6" fill="#fff" stroke="#06b6d4" stroke-width="1.5"/>
+      <text x="380" y="620" text-anchor="middle" font-weight="600" fill="#0e7490">Grafana</text>
+      <text x="380" y="638" text-anchor="middle" fill="#6b7280">System Dashboard</text>
+      <text x="380" y="654" text-anchor="middle" fill="#6b7280">Business KPI Dashboard</text>
+      <text x="380" y="670" text-anchor="middle" fill="#6b7280">Stakeholder View</text>
+
+      <!-- Alertmanager -->
+      <rect x="510" y="600" width="200" height="80" rx="6" fill="#fff" stroke="#06b6d4" stroke-width="1.5"/>
+      <text x="610" y="620" text-anchor="middle" font-weight="600" fill="#0e7490">Alertmanager</text>
+      <text x="610" y="638" text-anchor="middle" fill="#6b7280">Tiered Routing</text>
+      <text x="610" y="654" text-anchor="middle" fill="#6b7280">Warning / Critical / Page</text>
+      <text x="610" y="670" text-anchor="middle" fill="#6b7280">Runbook Links</text>
+
+      <!-- KPI Tracker -->
+      <rect x="740" y="600" width="200" height="80" rx="6" fill="#fff" stroke="#06b6d4" stroke-width="1.5"/>
+      <text x="840" y="620" text-anchor="middle" font-weight="600" fill="#0e7490">KPI Tracker</text>
+      <text x="840" y="638" text-anchor="middle" fill="#6b7280">Automation Rate</text>
+      <text x="840" y="654" text-anchor="middle" fill="#6b7280">Time-to-Settle</text>
+      <text x="840" y="670" text-anchor="middle" fill="#6b7280">Alert Precision/Recall</text>
+
+      <!-- Runbook Generator -->
+      <rect x="970" y="600" width="180" height="80" rx="6" fill="#fff" stroke="#06b6d4" stroke-width="1.5"/>
+      <text x="1060" y="620" text-anchor="middle" font-weight="600" fill="#0e7490">Runbook Gen</text>
+      <text x="1060" y="638" text-anchor="middle" fill="#6b7280">Auto-generated</text>
+      <text x="1060" y="654" text-anchor="middle" fill="#6b7280">From Alert Rules</text>
+      <text x="1060" y="670" text-anchor="middle" fill="#6b7280">Markdown + Links</text>
+
+      <!-- Metrics collection arrows (dashed, from all layers) -->
+      <line x1="150" y1="260" x2="150" y2="600" stroke="#06b6d4" stroke-width="1" stroke-dasharray="2 4" marker-end="url(#arrow-dashed)"/>
+      <line x1="380" y1="260" x2="380" y2="600" stroke="#06b6d4" stroke-width="1" stroke-dasharray="2 4" marker-end="url(#arrow-dashed)"/>
+      <line x1="610" y1="260" x2="610" y2="600" stroke="#06b6d4" stroke-width="1" stroke-dasharray="2 4" marker-end="url(#arrow-dashed)"/>
+      <line x1="840" y1="260" x2="840" y2="600" stroke="#06b6d4" stroke-width="1" stroke-dasharray="2 4" marker-end="url(#arrow-dashed)"/>
+      <line x1="150" y1="520" x2="150" y2="600" stroke="#06b6d4" stroke-width="1" stroke-dasharray="2 4" marker-end="url(#arrow-dashed)"/>
+      <line x1="380" y1="520" x2="380" y2="600" stroke="#06b6d4" stroke-width="1" stroke-dasharray="2 4" marker-end="url(#arrow-dashed)"/>
+      <line x1="610" y1="520" x2="610" y2="600" stroke="#06b6d4" stroke-width="1" stroke-dasharray="2 4" marker-end="url(#arrow-dashed)"/>
+    </g>
+
+    <!-- Cross-cutting: CI/CD, Testing -->
+    <rect x="1080" y="260" width="80" height="300" rx="6" fill="#f3f4f6" stroke="#9ca3af" stroke-width="1" stroke-dasharray="4 4"/>
+    <text x="1120" y="280" text-anchor="middle" font-size="10" fill="#6b7280" font-weight="600">CI/CD</text>
+    <text x="1120" y="310" text-anchor="middle" font-size="9" fill="#6b7280">GitHub Actions</text>
+    <text x="1120" y="340" text-anchor="middle" font-size="9" fill="#6b7280">Contract Tests</text>
+    <text x="1120" y="370" text-anchor="middle" font-size="9" fill="#6b7280">Integration Tests</text>
+    <text x="1120" y="400" text-anchor="middle" font-size="9" fill="#6b7280">E2E Tests</text>
+    <text x="1120" y="430" text-anchor="middle" font-size="9" fill="#6b7280">Docker Build</text>
+    <text x="1120" y="460" text-anchor="middle" font-size="9" fill="#6b7280">Deploy Staging</text>
+    <text x="1120" y="490" text-anchor="middle" font-size="9" fill="#6b7280">Deploy Prod</text>
+
+    <!-- Legend -->
+    <g font-size="10" transform="translate(50, 540)">
+      <rect x="0" y="0" width="12" height="12" rx="2" fill="#fff" stroke="#f59e0b" stroke-width="1.5"/>
+      <text x="18" y="10" fill="#374151">Custom n8n Node (TypeScript)</text>
+      <rect x="0" y="20" width="12" height="12" rx="2" fill="#fff" stroke="#f59e0b" stroke-width="1.5" stroke-dasharray="4 4"/>
+      <text x="18" y="30" fill="#374151">Scheduled Job</text>
+      <rect x="0" y="40" width="12" height="12" rx="2" fill="#e0f2fe" stroke="#0369a1" stroke-width="1.5"/>
+      <text x="18" y="50" fill="#374151">Python Service (FastAPI)</text>
+      <rect x="0" y="60" width="12" height="12" rx="2" fill="#fff" stroke="#06b6d4" stroke-width="1.5"/>
+      <text x="18" y="70" fill="#374151">Observability Component</text>
+      <line x1="0" y1="85" x2="12" y2="85" stroke="#06b6d4" stroke-width="1" stroke-dasharray="2 4" marker-end="url(#arrow-dashed)"/>
+      <text x="18" y="90" fill="#374151">Metrics Collection</text>
+      <line x1="0" y1="105" x2="12" y2="105" stroke="#9ca3af" stroke-width="2" marker-end="url(#arrow)"/>
+      <text x="18" y="110" fill="#374151">Data Flow</text>
+      <line x1="0" y1="125" x2="12" y2="125" stroke="#f59e0b" stroke-width="1.5" stroke-dasharray="4 4" marker-end="url(#arrow)"/>
+      <text x="18" y="130" fill="#374151">Internal n8n Flow</text>
+    </g>
+  </svg>
+  <figcaption>Figure 1: Sports Data Automation Platform Architecture — Data flows from mock providers (WebSocket, REST, Batch) through a Python ingestion service (normalize, validate, deduplicate) into n8n queue mode via Redis Streams. Custom TypeScript n8n nodes handle routing, odds normalization, settlement (rule DSL), and LLM alert generation with confidence scoring. Outputs integrate with mock SaaS systems. Observability plane collects metrics from all layers, powers Grafana dashboards for engineers and stakeholders, and routes alerts with runbook links via Alertmanager.</figcaption>
+</figure>

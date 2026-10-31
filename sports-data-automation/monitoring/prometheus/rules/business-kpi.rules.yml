@@ -1,0 +1,118 @@
+groups:
+  - name: business-kpi-alerts
+    interval: 60s
+    rules:
+      # Automation rate alerts
+      - alert: LowAutomationRate
+        expr: |
+          sum(rate(events_forwarded_total{result="success"}[1h])) by (type)
+          /
+          sum(rate(events_received_total[1h])) by (type)
+          < 0.90
+        for: 15m
+        labels:
+          severity: warning
+          component: business
+        annotations:
+          summary: "Low automation rate"
+          description: "Automation rate for {{ $labels.type }} is {{ $value | printf \"%.1f\" }}% (target: >90%)"
+          runbook_url: "https://github.com/yourorg/sports-data-automation/docs/runbooks/low-automation-rate.md"
+
+      - alert: CriticalAutomationRate
+        expr: |
+          sum(rate(events_forwarded_total{result="success"}[1h])) by (type)
+          /
+          sum(rate(events_received_total[1h])) by (type)
+          < 0.70
+        for: 5m
+        labels:
+          severity: critical
+          component: business
+        annotations:
+          summary: "Critical automation rate"
+          description: "Automation rate for {{ $labels.type }} is {{ $value | printf \"%.1f\" }}% (target: >90%)"
+          runbook_url: "https://github.com/yourorg/sports-data-automation/docs/runbooks/critical-automation-rate.md"
+
+      # Time to settle alerts
+      - alert: HighTimeToSettle
+        expr: |
+          histogram_quantile(0.95,
+            sum(rate(settlement_latency_seconds_bucket[1h])) by (le)
+          ) > 30
+        for: 10m
+        labels:
+          severity: warning
+          component: business
+        annotations:
+          summary: "High time to settle"
+          description: "P95 time to settle is {{ $value | printf \"%.0f\" }}s (target: <30s)"
+          runbook_url: "https://github.com/yourorg/sports-data-automation/docs/runbooks/high-time-to-settle.md"
+
+      # Alert quality alerts
+      - alert: LowAlertPrecision
+        expr: |
+          sum(rate(alert_evaluation_total{agreed="true"}[1h])) by (type)
+          /
+          sum(rate(alert_evaluation_total[1h])) by (type)
+          < 0.80
+        for: 30m
+        labels:
+          severity: warning
+          component: business
+        annotations:
+          summary: "Low alert precision"
+          description: "Alert precision for {{ $labels.type }} is {{ $value | printf \"%.1f\" }}% (target: >80%)"
+          runbook_url: "https://github.com/yourorg/sports-data-automation/docs/runbooks/low-alert-precision.md"
+
+      - alert: HighHumanReviewRate
+        expr: |
+          sum(rate(alert_human_review_total[1h]))
+          /
+          sum(rate(alert_generated_total[1h]))
+          > 0.30
+        for: 15m
+        labels:
+          severity: warning
+          component: business
+        annotations:
+          summary: "High human review rate"
+          description: "{{ $value | printf \"%.1f\" }}% of alerts require human review (target: <30%)"
+          runbook_url: "https://github.com/yourorg/sports-data-automation/docs/runbooks/high-human-review-rate.md"
+
+      # Reconciliation alerts
+      - alert: ReconciliationDriftDetected
+        expr: |
+          reconciliation_discrepancies_total > 0
+        for: 0m
+        labels:
+          severity: warning
+          component: business
+        annotations:
+          summary: "Reconciliation drift detected"
+          description: "{{ $value }} discrepancies found in daily reconciliation"
+          runbook_url: "https://github.com/yourorg/sports-data-automation/docs/runbooks/reconciliation-drift.md"
+
+      - alert: ReconciliationHighDrift
+        expr: |
+          reconciliation_discrepancies_total > 100
+        for: 0m
+        labels:
+          severity: critical
+          component: business
+        annotations:
+          summary: "High reconciliation drift"
+          description: "{{ $value }} discrepancies found - possible systemic issue"
+          runbook_url: "https://github.com/yourorg/sports-data-automation/docs/runbooks/reconciliation-high-drift.md"
+
+      # Cost alerts
+      - alert: HighCostPerEvent
+        expr: |
+          (sum(rate(infrastructure_cost_per_hour[1h])) / sum(rate(events_received_total[1h]))) * 3600 > 0.01
+        for: 1h
+        labels:
+          severity: info
+          component: business
+        annotations:
+          summary: "High cost per event"
+          description: "Cost per event is ${{ $value | printf \"%.4f\" }} (target: <$0.01)"
+          runbook_url: "https://github.com/yourorg/sports-data-automation/docs/runbooks/high-cost-per-event.md"
