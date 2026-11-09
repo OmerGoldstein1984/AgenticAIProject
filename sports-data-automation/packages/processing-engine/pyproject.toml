@@ -1,0 +1,56 @@
+# pyproject.toml for processing-engine
+# ====================================
+# Declares the Python package metadata, runtime dependencies (pydantic, redis, httpx,
+# anthropic, ...), dev dependencies (pytest, mypy, ruff), pytest config, and package
+# discovery (where="src", include="processing_engine*").
+# # INTERVIEW: asyncio_mode = "auto" lets pytest handle async tests without asyncio markers.
+# # GAP: dev deps installed into the image via Dockerfile (bloat); no lockfile committed.
+
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "processing-engine"
+version = "1.0.0"
+description = "Sports data processing engine - settlement, LLM alerts, reconciliation"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "pydantic>=2.6.0",
+    "pydantic-settings>=2.2.0",
+    "redis>=5.0.0",
+    "httpx>=0.26.0",
+    "anthropic>=0.32.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-cov>=4.1.0",
+    "pytest-asyncio>=0.23.0",
+    "pytest-mock>=3.12.0",
+    "mypy>=1.8.0",
+    "ruff>=0.1.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["processing_engine*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+asyncio_mode = "auto"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true

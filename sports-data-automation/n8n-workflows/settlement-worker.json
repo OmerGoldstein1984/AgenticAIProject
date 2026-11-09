@@ -1,0 +1,114 @@
+{
+  "name": "Settlement Worker",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "settlement",
+        "responseMode": "onReceived",
+        "responseData": "{\"status\":\"settled\",\"eventId\":{{ $json[\"event_id\"] }},\"outcome\":{{ $json[\"outcome\"] }},\"selectionId\":{{ $json[\"selection_id\"] }}}"
+      },
+      "name": "Ingest Webhook (settlement)",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [240, 300],
+      "id": "settlement-webhook-001",
+      "webhookId": "settlement-worker-webhook-settlement"
+    },
+    {
+      "parameters": {
+        "functionCode": "// Load the settlement rule set (embedded JSON). In production this is reloaded\n// from a DB/remote config (hot-reload declared in node UI but not yet implemented).\nconst ruleSet = {\n  version: '1.0',\n  default_outcome: 'void',\n  rules: [\n    {\n      id: 'rule_football_home_win',\n      name: 'Football home win (ended)',\n      priority: 10,\n      condition: {\n        operator: 'and',\n        conditions: [\n          { field: 'event.status', comparator: 'eq', value: 'ended' },\n          { field: 'event.score.home', comparator: 'gt', value: '{{ $json.event.score.away }}' }\n        ]\n      },\n      outcome: 'won'\n    },\n    {\n      id: 'rule_football_home_loss',\n      name: 'Football home loss (ended)',\n      priority: 10,\n      condition: {\n        operator: 'and',\n        conditions: [\n          { field: 'event.status', comparator: 'eq', value: 'ended' },\n          { field: 'event.score.home', comparator: 'lt', value: '{{ $json.event.score.away }}' }\n        ]\n      },\n      outcome: 'lost'\n    },\n    {\n      id: 'rule_tennis_retirement',\n      name: 'Tennis retirement / abandoned',\n      priority: 20,\n      condition: {\n        operator: 'or',\n        conditions: [\n          { field: 'event.status', comparator: 'eq', value: 'abandoned' },\n          { field: 'event.status', comparator: 'eq', value: 'postponed' }\n        ]\n      },\n      outcome: 'void'\n    },\n    {\n      id: 'rule_default_void',\n      name: 'Unmatched -> void (safe)',\n      priority: 0,\n      condition: { operator: 'or', conditions: [] },\n      outcome: 'void'\n    }\n  ]\n};\n\nreturn [{\n  json: {\n    event: $json.event,\n    odds: $json.odds,\n    rule_set: ruleSet\n  }\n}];"
+      },
+      "name": "Load Rule Set",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [500, 300],
+      "id": "settlement-ruleset-002"
+    },
+    {
+      "parameters": {
+        "functionCode": "// Evaluate settlement rule set via processing engine and emit SettlementResult\nconst { event, odds, rule_set } = $json;\n\n// Build context for rule engine (mirrors processing_engine.settlement.rule_engine._build_context)\nconst context = {\n  event: {\n    id: event.id,\n    sport: event.sport,\n    league: event.league,\n    status: event.status,\n    home_team: event.home_team,\n    away_team: event.away_team,\n    score: event.score || { home: 0, away: 0 }\n  },\n  odds: odds || null\n};\n\nfunction getNested(obj, path) {\n  return path.split('.').reduce((o, k) => (o && o[k] !== undefined ? o[k] : undefined), obj);\n}\n\nfunction evalCond(cond, ctx) {\n  if (cond.operator) {\n    const subs = cond.conditions || [];\n    if (cond.operator === 'not') return !evalCond(subs[0], ctx);\n    const results = subs.map(c => evalCond(c, ctx));\n    return cond.operator === 'and' ? results.every(Boolean) : results.some(Boolean);\n  }\n  const actual = getNested(ctx, cond.field);\n  const cmp = cond.comparator;\n  const val = cond.value;\n  switch (cmp) {\n    case 'eq': return actual == val;\n    case 'ne': return actual != val;\n    case 'gt': return Number(actual) > Number(val);\n    case 'gte': return Number(actual) >= Number(val);\n    case 'lt': return Number(actual) < Number(val);\n    case 'lte': return Number(actual) <= Number(val);\n    case 'in': return Array.isArray(val) ? val.includes(actual) : actual == val;\n    case 'contains': return String(actual).includes(String(val));\n    default: return false;\n  }\n}\n\nlet outcome = rule_set.default_outcome;\nlet confidence = 0.5;\nlet matchedRule = null;\nfor (const rule of (rule_set.rules || []).sort((a, b) => b.priority - a.priority)) {\n  try {\n    if (evalCond(rule.condition, context)) {\n      outcome = rule.outcome;\n      confidence = 1.0;\n      matchedRule = rule;\n      break;\n    }\n  } catch (e) {\n    // skip bad rule\n  }\n}\n\nreturn [{\n  json: {\n    event_id: event.id,\n    market_id: odds ? odds.market_id : 'unknown',\n    selection_id: odds ? odds.selection_id : 'unknown',\n    outcome,\n    settled_at: new Date().toISOString(),\n    source: 'auto',\n    confidence,\n    matched_rule: matchedRule ? matchedRule.id : null,\n    rule_set_version: rule_set.version\n  }\n}];"
+      },
+      "name": "Evaluate Settlement Rules",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [760, 300],
+      "id": "settlement-evaluate-003"
+    },
+    {
+      "parameters": {
+        "functionCode": "// Forward settlement result to downstream systems (CRM, risk, reporting)\nconst result = $json;\nreturn [{\n  json: {\n    target: 'sportsbook-crm',\n    action: 'settle_bet',\n    payload: {\n      event_id: result.event_id,\n      market_id: result.market_id,\n      selection_id: result.selection_id,\n      outcome: result.outcome,\n      settled_at: result.settled_at,\n      confidence: result.confidence\n    }\n  }\n}];"
+      },
+      "name": "Notify CRM of Settlement",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [1020, 300],
+      "id": "settlement-crm-004"
+    },
+    {
+      "parameters": {
+        "functionCode": "// Audit log entry for every automated settlement decision (regulatory requirement)\nconst result = $json;\nreturn [{\n  json: {\n    target: 'audit-log',\n    action: 'record_settlement',\n    payload: {\n      event_id: result.event_id,\n      market_id: result.market_id,\n      selection_id: result.selection_id,\n      outcome: result.outcome,\n      source: result.source,\n      confidence: result.confidence,\n      matched_rule: result.matched_rule,\n      settled_at: result.settled_at\n    }\n  }\n}];"
+      },
+      "name": "Write Audit Trail",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [1020, 500],
+      "id": "settlement-audit-005"
+    }
+  ],
+  "connections": {
+    "Ingest Webhook (settlement)": {
+      "main": [
+        [
+          {
+            "node": "Load Rule Set",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load Rule Set": {
+      "main": [
+        [
+          {
+            "node": "Evaluate Settlement Rules",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Evaluate Settlement Rules": {
+      "main": [
+        [
+          {
+            "node": "Notify CRM of Settlement",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Write Audit Trail",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataErrorExecution": "all",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": "none",
+    "timezone": "UTC"
+  },
+  "id": "settlement-worker-workflow-003",
+  "meta": {
+    "instanceId": "00000000-0000-0000-0000-000000000000"
+  }
+}

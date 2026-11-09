@@ -1,0 +1,144 @@
+{
+  "name": "Odds Normalization",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "odds",
+        "responseMode": "onReceived",
+        "responseData": "{\"status\":\"normalized\",\"eventId\":{{ $json[\"eventId\"] }},\"marketId\":{{ $json[\"marketId\"] }},\"selectionId\":{{ $json[\"selectionId\"] }}}"
+      },
+      "name": "Ingest Webhook (odds)",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [240, 300],
+      "id": "odds-webhook-001",
+      "webhookId": "odds-normalization-webhook-odds"
+    },
+    {
+      "parameters": {
+        "functionCode": "// Normalize odds to decimal and compute cross-provider comparison.\n// Input: CanonicalOdds { provider_id, event_id, market_id, selection_id, odds, format, timestamp, sequence }\nconst odds = $json;\n\n// Convert to decimal if needed (format recorded for audit)\nlet decimalOdds = Number(odds.odds);\nlet originalFormat = odds.format;\nif (originalFormat === 'american') {\n  const a = Number(odds.odds);\n  decimalOdds = a > 0 ? (a / 100) + 1 : (100 / Math.abs(a)) + 1;\n} else if (originalFormat === 'fractional') {\n  decimalOdds = Number(odds.odds) + 1;\n}\n\nconst normalized = {\n  provider_id: odds.provider_id,\n  event_id: odds.event_id,\n  market_id: odds.market_id,\n  selection_id: odds.selection_id,\n  odds: Math.round(decimalOdds * 100) / 100,\n  format: 'decimal',\n  original_format: originalFormat,\n  timestamp: odds.timestamp,\n  sequence: odds.sequence\n};\n\nreturn [{\n  json: normalized\n}];"
+      },
+      "name": "Normalize to Decimal",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [500, 300],
+      "id": "odds-normalize-002"
+    },
+    {
+      "parameters": {
+        "functionCode": "// Aggregate latest odds per event/market/selection across providers for arbitrage detection\nconst odds = $json;\nreturn [{\n  json: {\n    ...odds,\n    aggregated_at: new Date().toISOString(),\n    arbitrage_eligible: true\n  }\n}];"
+      },
+      "name": "Aggregate Cross-Provider",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [760, 300],
+      "id": "odds-aggregate-003"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "number": [
+            {
+              "value1": "={{ $json[\"odds\"] }}",
+              "operation": "greaterThan",
+              "value2": 10
+            }
+          ]
+        }
+      },
+      "name": "Flag Extreme Odds",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [1020, 100],
+      "id": "odds-flag-extreme-004"
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "table": "odds_normalization_log"
+      },
+      "name": "Write to Warehouse",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 1,
+      "position": [1020, 500],
+      "id": "odds-warehouse-005"
+    },
+    {
+      "parameters": {
+        "functionCode": "// Alert on extreme odds (possible palpable error / trader mistake)\nconst odds = $json;\nreturn [{\n  json: {\n    anomaly_type: 'odds_anomaly',\n    event_data: odds,\n    context: { deviation_percent: Math.abs(odds.odds - 2.0) * 100, provider_count: 1 },\n    few_shot_examples: []\n  }\n}];"
+      },
+      "name": "Build Odds Anomaly Alert",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [1020, 100],
+      "id": "odds-alert-006"
+    }
+  ],
+  "connections": {
+    "Ingest Webhook (odds)": {
+      "main": [
+        [
+          {
+            "node": "Normalize to Decimal",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize to Decimal": {
+      "main": [
+        [
+          {
+            "node": "Aggregate Cross-Provider",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Aggregate Cross-Provider": {
+      "main": [
+        [
+          {
+            "node": "Flag Extreme Odds",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Write to Warehouse",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Flag Extreme Odds": {
+      "main": [
+        [
+          {
+            "node": "Build Odds Anomaly Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataErrorExecution": "all",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": "none",
+    "timezone": "UTC"
+  },
+  "id": "odds-normalization-workflow-002",
+  "meta": {
+    "instanceId": "00000000-0000-0000-0000-000000000000"
+  }
+}

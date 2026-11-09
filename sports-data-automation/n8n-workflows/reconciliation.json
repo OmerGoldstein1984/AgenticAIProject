@@ -1,0 +1,122 @@
+{
+  "name": "Reconciliation Job",
+  "nodes": [
+    {
+      "parameters": {
+        "triggerTimes": {
+          "item": [
+            {
+              "mode": "everyDay",
+              "hour": 2,
+              "minute": 0
+            }
+          ]
+        }
+      },
+      "name": "Daily Cron (02:00 UTC)",
+      "type": "n8n-nodes-base.cron",
+      "typeVersion": 1,
+      "position": [240, 300],
+      "id": "reconciliation-cron-001"
+    },
+    {
+      "parameters": {
+        "functionCode": "// Compute checksums for entities from system A and system B.\n// In production these are read from each source system (ingestion DB, provider feed, settlement feed).\nconst date = new Date().toISOString().slice(0, 10);\n\n// System A: canonical events from ingestion\nconst systemA = [\n  { entity_type: 'event', entity_id: 'evt_demo_football_02', data: { status: 'ended', score: { home: 2, away: 1 } }, source_system: 'ingestion' },\n  { entity_type: 'event', entity_id: 'evt_demo_basketball_01', data: { status: 'ended', score: { home: 102, away: 98 } }, source_system: 'ingestion' },\n  { entity_type: 'settlement', entity_id: 'evt_demo_football_02|match_winner|home', data: { outcome: 'won', confidence: 1.0 }, source_system: 'ingestion' }\n];\n\n// System B: settlement feed / provider\nconst systemB = [\n  { entity_type: 'event', entity_id: 'evt_demo_football_02', data: { status: 'ended', score: { home: 2, away: 1 } }, source_system: 'settlement_feed' },\n  { entity_type: 'event', entity_id: 'evt_demo_basketball_01', data: { status: 'ended', score: { home: 102, away: 100 } }, source_system: 'settlement_feed' },\n  { entity_type: 'settlement', entity_id: 'evt_demo_football_02|match_winner|home', data: { outcome: 'won', confidence: 1.0 }, source_system: 'settlement_feed' }\n];\n\nreturn [{\n  json: { date, system_a: systemA, system_b: systemB }\n}];"
+      },
+      "name": "Snapshot Entity Checksums",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [500, 300],
+      "id": "reconciliation-snapshot-002"
+    },
+    {
+      "parameters": {
+        "functionCode": "// Compare checksums across systems and detect drift.\n// Mirrors processing_engine.reconciliation.drift_detector.DriftDetector.detect\nconst { system_a, system_b, date } = $json;\n\nfunction computeChecksum(entityType, entityId, data) {\n  const payload = { entity_type: entityType, entity_id: entityId, data };\n  const str = JSON.stringify(payload, Object.keys(payload).sort());\n  return str.length + ':' + JSON.stringify(payload).slice(0, 12);\n}\n\nconst indexA = new Map();\nconst indexB = new Map();\nfor (const r of system_a) indexA.set(`${r.entity_type}|${r.entity_id}`, r);\nfor (const r of system_b) indexB.set(`${r.entity_type}|${r.entity_id}`, r);\n\nconst discrepancies = [];\nconst allKeys = new Set([...indexA.keys(), ...indexB.keys()]);\nfor (const key of allKeys) {\n  const [entityType, entityId] = key.split('|');\n  const a = indexA.get(key);\n  const b = indexB.get(key);\n  if (a && b) {\n    const ca = computeChecksum(entityType, entityId, a.data);\n    const cb = computeChecksum(entityType, entityId, b.data);\n    if (ca !== cb) {\n      const allFields = new Set([...Object.keys(a.data || {}), ...Object.keys(b.data || {})]);\n      for (const f of allFields) {\n        if (JSON.stringify(a.data[f]) !== JSON.stringify(b.data[f])) {\n          discrepancies.push({\n            entity_type: entityType,\n            entity_id: entityId,\n            field: f,\n            expected: a.data[f],\n            actual: b.data[f],\n            severity: ['outcome','odds','status','score'].includes(f) ? 'high' : 'medium'\n          });\n        }\n      }\n    }\n  } else if (a && !b) {\n    discrepancies.push({ entity_type: entityType, entity_id: entityId, field: '__entity__', expected: 'present', actual: 'missing', severity: 'high' });\n  } else if (!a && b) {\n    discrepancies.push({ entity_type: entityType, entity_id: entityId, field: '__entity__', expected: 'missing', actual: 'present', severity: 'high' });\n  }\n}\n\nconst matched = system_a.length - discrepancies.length;\nreturn [{\n  json: { date, total_events: system_a.length, matched, discrepancies, source_a: 'ingestion', source_b: 'settlement_feed' }\n}];"
+      },
+      "name": "Detect Drift",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [760, 300],
+      "id": "reconciliation-drift-003"
+    },
+    {
+      "parameters": {
+        "functionCode": "// Auto-correct safe discrepancies and flag the rest.\n// Mirrors processing_engine.reconciliation.auto_corrector.AutoCorrector.correct\nconst { date, total_events, matched, discrepancies } = $json;\n\nconst safeFields = new Set(['score', 'status', 'metadata']);\nconst corrected = [];\nconst flagged = [];\n\nfor (const d of discrepancies) {\n  const isFinancial = ['outcome', 'odds', 'selection_id', 'market_id'].includes(d.field);\n  const isEntityMissing = d.field === '__entity__';\n  if (isFinancial || isEntityMissing || d.severity === 'high') {\n    flagged.push({ ...d, corrected: false, reason: 'high severity or financial field; manual review required', corrected_value: d.expected });\n  } else if (safeFields.has(d.field) && ['low', 'medium'].includes(d.severity)) {\n    corrected.push({ ...d, corrected: true, reason: 'auto-corrected to expected value', corrected_value: d.expected });\n  } else {\n    flagged.push({ ...d, corrected: false, reason: 'not auto-correctable; manual review required', corrected_value: d.expected });\n  }\n}\n\nreturn [{\n  json: { date, total_events, matched, discrepancies, corrected, flagged }\n}];"
+      },
+      "name": "Auto-Correct / Flag",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [1020, 300],
+      "id": "reconciliation-correct-004"
+    },
+    {
+      "parameters": {
+        "functionCode": "// Build the ReconciliationReport for the date\nconst { date, total_events, matched, discrepancies, corrected, flagged } = $json;\nconst report = {\n  date,\n  total_events,\n  matched,\n  discrepancies,\n  auto_corrected: corrected.filter(c => c.corrected).length,\n  manual_review_required: flagged.length\n};\n\n// Emit critical alert if too many discrepancies (per PROJECT_SPEC: > 100)\nconst critical = discrepancies.length > 100;\n\nreturn [{\n  json: {\n    report,\n    critical_alert: critical,\n    alert_payload: critical ? {\n      anomaly_type: 'reconciliation_drift',\n      context: { discrepancy_count: discrepancies.length, date },\n      event_data: { id: date }\n    } : null\n  }\n}];"
+      },
+      "name": "Build Reconciliation Report",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [1280, 300],
+      "id": "reconciliation-report-005"
+    }
+  ],
+  "connections": {
+    "Daily Cron (02:00 UTC)": {
+      "main": [
+        [
+          {
+            "node": "Snapshot Entity Checksums",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Snapshot Entity Checksums": {
+      "main": [
+        [
+          {
+            "node": "Detect Drift",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Detect Drift": {
+      "main": [
+        [
+          {
+            "node": "Auto-Correct / Flag",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Auto-Correct / Flag": {
+      "main": [
+        [
+          {
+            "node": "Build Reconciliation Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataErrorExecution": "all",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": "none",
+    "timezone": "UTC"
+  },
+  "id": "reconciliation-workflow-005",
+  "meta": {
+    "instanceId": "0000-0000-0000-0000-000000000000"
+  }
+}

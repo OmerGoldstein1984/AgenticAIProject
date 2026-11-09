@@ -1,0 +1,180 @@
+{
+  "name": "Alert Engine (LLM)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "alert",
+        "responseMode": "onReceived",
+        "responseData": "{\"status\":\"alert_received\",\"alertId\":{{ $json[\"id\"] }}}"
+      },
+      "name": "Ingest Webhook (alert)",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [240, 300],
+      "id": "alert-webhook-001",
+      "webhookId": "alert-engine-webhook-alert"
+    },
+    {
+      "parameters": {
+        "functionCode": "// Build the LLMAlertRequest from raw anomaly data.\n// Input: { anomaly_type, event_data, context, few_shot_examples? }\nconst input = $json;\nconst request = {\n  event_data: input.event_data || {},\n  anomaly_type: input.anomaly_type || 'odds_anomaly',\n  context: input.context || {},\n  few_shot_examples: input.few_shot_examples || []\n};\nreturn [{\n  json: request\n}];"
+      },
+      "name": "Build LLM Request",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [500, 300],
+      "id": "alert-build-request-002"
+    },
+    {
+      "parameters": {
+        "functionCode": "// Call the processing engine LLM client to generate a structured alert.\n// In production this invokes processing_engine.alerts.llm_client.generate_alert(request)\n// via a Python worker or the LLM node. Here we simulate the structured output schema.\nconst request = $json;\nconst anomalyType = request.anomaly_type;\nconst ctx = request.context || {};\n\nconst templates = {\n  odds_anomaly: {\n    title: 'Odds Anomaly Detected',\n    description: 'Odds moved beyond expected threshold vs other providers. Verify the price before accepting bets.',\n    severity: 'warning',\n    suggested_action: 'Verify with other providers before accepting bets.'\n  },\n  settlement_discrepancy: {\n    title: 'Settlement Discrepancy',\n    description: 'Settled outcome disagrees with canonical event result. Review and reconcile before paying out.',\n    severity: 'critical',\n    suggested_action: 'Reconcile with official result feed and adjust payouts.'\n  },\n  feed_outage: {\n    title: 'Feed Outage Suspected',\n    description: 'No updates received from provider within the expected window. Check provider connectivity.',\n    severity: 'page',\n    suggested_action: 'Check provider feed health and switch to backup provider.'\n  },\n  arbitrage_detected: {\n    title: 'Arbitrage Opportunity',\n    description: 'Cross-provider odds imply an arbitrage situation. Review exposure and consider adjusting limits.',\n    severity: 'warning',\n    suggested_action: 'Review exposure; adjust limits or suspend the market.'\n  },\n  suspicious_pattern: {\n    title: 'Suspicious Betting Pattern',\n    description: 'Unusual betting volume or pattern detected. Review for potential fraud.',\n    severity: 'critical',\n    suggested_action: 'Review account activity and consider limiting the market.'\n  },\n  reconciliation_drift: {\n    title: 'Reconciliation Drift',\n    description: 'Checksum comparison found drift between systems for this entity.',\n    severity: 'warning',\n    suggested_action: 'Investigate drift and apply auto-correction or manual fix.'\n  }\n};\n\nconst template = templates[anomalyType] || templates.odds_anomaly;\nconst confidence = Number.isFinite(Number(ctx.confidence)) ? Math.min(1, Math.max(0, Number(ctx.confidence))) : 0.85;\n\nreturn [{\n  json: {\n    ...template,\n    confidence,\n    metadata: { anomaly_type: anomalyType, source_event_id: request.event_data.event_id || request.event_data.id },\n    llm_request: request\n  }\n}];"
+      },
+      "name": "Generate Structured Alert",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [760, 300],
+      "id": "alert-generate-003"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "number": [
+            {
+              "value1": "={{ $json[\"confidence\"] }}",
+              "operation": "lessThan",
+              "value2": 0.7
+            }
+          ]
+        }
+      },
+      "name": "Confidence Threshold Check",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [1020, 100],
+      "id": "alert-threshold-004"
+    },
+    {
+      "parameters": {
+        "functionCode": "// Route high-confidence alert to auto-escalation (pager / ticket / Slack)\nconst alert = $json;\nreturn [{\n  json: {\n    action: 'auto_escalate',\n    alert,\n    routing: alert.severity === 'page' ? 'pagerduty' : alert.severity === 'critical' ? 'ticket' : 'slack',\n    escalated_at: new Date().toISOString()\n  }\n}];"
+      },
+      "name": "Auto-Escalate (High Confidence)",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [1280, 400],
+      "id": "alert-auto-escalate-005"
+    },
+    {
+      "parameters": {
+        "functionCode": "// Route low-confidence alert to human review queue\nconst alert = $json;\nreturn [{\n  json: {\n    action: 'human_review',\n    alert,\n    review_queue: 'alert-engine-review',\n    queued_at: new Date().toISOString()\n  }\n}];"
+      },
+      "name": "Human Review Queue (Low Confidence)",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [1280, -200],
+      "id": "alert-human-review-006"
+    },
+    {
+      "parameters": {
+        "v2": {
+          "title": "Alert Engine",
+          "subtitle": "Confidence: {{ $json.confidence }} | {{ $json.title }}",
+          "message": "{{ $json.description }}\n\nSeverity: {{ $json.severity }}\nAction: {{ $json.suggested_action }}",
+          "type": "notice"
+        }
+      },
+      "name": "Slack Notification",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 1,
+      "position": [1540, 100],
+      "id": "alert-slack-007"
+    }
+  ],
+  "connections": {
+    "Ingest Webhook (alert)": {
+      "main": [
+        [
+          {
+            "node": "Build LLM Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build LLM Request": {
+      "main": [
+        [
+          {
+            "node": "Generate Structured Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Structured Alert": {
+      "main": [
+        [
+          {
+            "node": "Confidence Threshold Check",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Confidence Threshold Check": {
+      "main": [
+        [
+          {
+            "node": "Auto-Escalate (High Confidence)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Human Review Queue (Low Confidence)",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Auto-Escalate (High Confidence)": {
+      "main": [
+        [
+          {
+            "node": "Slack Notification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Human Review Queue (Low Confidence)": {
+      "main": [
+        [
+          {
+            "node": "Slack Notification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataErrorExecution": "all",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": "none",
+    "timezone": "UTC"
+  },
+  "id": "alert-engine-workflow-004",
+  "meta": {
+    "instanceId": "00000000-0000-0000-0000-000000000000"
+  }
+}

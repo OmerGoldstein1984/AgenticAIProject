@@ -1,0 +1,125 @@
+{
+  "name": "Event Router",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "event",
+        "responseMode": "onReceived",
+        "responseData": "{\"status\":\"accepted\",\"eventId\":{{ $json[\"id\"] }}}"
+      },
+      "name": "Ingest Webhook (event)",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [240, 300],
+      "id": "event-webhook-001",
+      "webhookId": "event-router-webhook-event"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "number": [
+            {
+              "value1": "={{ $json[\"status\"] }}",
+              "operation": "equals",
+              "value2": "duplicate"
+            }
+          ],
+          "string": [
+            {
+              "value1": "={{ $json[\"status\"] }}",
+              "operation": "equals",
+              "value2": "rejected"
+            }
+          ]
+        }
+      },
+      "name": "Filter Duplicates / Rejected",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [500, 100],
+      "id": "event-filter-002"
+    },
+    {
+      "parameters": {
+        "functionCode": "// Route canonical event to downstream systems\nconst event = $json;\nconst route = {\n  target: 'sportsbook-crm',\n  action: 'update_event',\n  payload: {\n    eventId: event.id,\n    sport: event.sport,\n    league: event.league,\n    status: event.status,\n    score: event.score,\n    homeTeam: event.home_team,\n    awayTeam: event.away_team\n  }\n};\nreturn [{\n  json: route\n}];"
+      },
+      "name": "Route to Sportsbook CRM",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [760, 100],
+      "id": "event-route-crm-003"
+    },
+    {
+      "parameters": {
+        "functionCode": "// Publish event to risk management system\nconst event = $json;\nreturn [{\n  json: {\n    target: 'risk-management',\n    action: 'exposure_update',\n    payload: {\n      eventId: event.id,\n      sport: event.sport,\n      league: event.league,\n      status: event.status\n    }\n  }\n}];"
+      },
+      "name": "Publish to Risk System",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [760, 400],
+      "id": "event-route-risk-004"
+    },
+    {
+      "parameters": {
+        "functionCode": "// Dead-letter queue for rejected/duplicate events\nconst event = $json;\nreturn [{\n  json: {\n    target: 'dead-letter-queue',\n    action: 'log',\n    reason: event.status,\n    eventId: event.id || event.eventId\n  }\n}];"
+      },
+      "name": "Dead Letter Queue",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [760, -200],
+      "id": "event-dlq-005"
+    }
+  ],
+  "connections": {
+    "Ingest Webhook (event)": {
+      "main": [
+        [
+          {
+            "node": "Filter Duplicates / Rejected",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter Duplicates / Rejected": {
+      "main": [
+        [
+          {
+            "node": "Route to Sportsbook CRM",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Publish to Risk System",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Dead Letter Queue",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataErrorExecution": "all",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": "none",
+    "timezone": "UTC"
+  },
+  "id": "event-router-workflow-001",
+  "meta": {
+    "instanceId": "00000000-0000-0000-0000-000000000000"
+  }
+}
