@@ -1,4 +1,7 @@
 # Dockerfile for Mock Event Feed
+# ==============================
+# Builds the mock REST event/settlement provider (python -m mock.event_feed) on port 8081.
+# Non-root user, exposes 8081, installs deps from pyproject.toml.
 FROM python:3.11-slim
 
 WORKDIR /app

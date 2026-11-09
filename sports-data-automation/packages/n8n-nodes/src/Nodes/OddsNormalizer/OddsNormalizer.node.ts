@@ -1,3 +1,40 @@
+/**
+ * packages/n8n-nodes/src/Nodes/OddsNormalizer/OddsNormalizer.node.ts
+ *
+ * FILE HEADER
+ * -----------
+ * Business problem this file solves:
+ *   Providers quote odds in Decimal (European), American (moneyline), or Fractional (UK)
+ *   formats, and each provider's prices for the same market differ. OddsNormalizer is an n8n
+ *   custom node that converts every quote to a chosen output format, validates odds ranges and
+   * staleness, computes implied probability, detects cross-provider arbitrage (total implied
+   * probability < 100%), and flags the best odds per selection — all in one node.
+ *
+ * Where it sits in the flow:
+ *   After SportsEventRouter routes normalized events here. Consumes canonical odds from the
+   * ingestion webhook and emits three outputs: Normalized odds, Arbitrage opportunities, and
+   * Errors/Invalid. Arbitrage output feeds risk/exposure checks; normalized odds feed the
+   * trading/CRM systems.
+ *
+ * What calls it / what it calls:
+ *   Called by: n8n workflow engine (execute()), triggered by routed odds events.
+ *   Calls: nothing external (pure in-node logic); private helpers toDecimal/fromDecimal/
+   *   isBetterOdds.
+ *
+ * What breaks if removed:
+ *   Odds stay in provider-specific formats; cross-provider comparison and arbitrage detection
+   * are impossible, and stale/invalid odds reach downstream systems.
+ *
+ * Language conventions:
+ *   TypeScript/n8n custom node. Three Main outputs (Normalized/Arbitrage/Errors).
+ *
+ * # GAP: best-odds/arbitrage are computed in-memory within a single execute batch; there's no
+ *   cross-batch state, so an arbitrage spanning two polls in different batches is missed.
+ *   See 07_issues_found.md.
+ * # INTERVIEW: arbitrage exists when sum(1/best_decimal_odds across all selections) < 1 — the
+ *   margin is the bookmaker's guaranteed profit if they lay every outcome at those odds.
+ */
+
 import {
   INodeType,
   INodeTypeDescription,
@@ -7,6 +44,10 @@ import {
 } from 'n8n-workflow';
 
 export class OddsNormalizer implements INodeType {
+  /**
+   * n8n node metadata and configurable parameters (output format, arbitrage detection,
+   * best-odds selection, validation rules, output fields). Drives the n8n UI panel.
+   */
   description: INodeTypeDescription = {
     displayName: 'Odds Normalizer',
     name: 'oddsNormalizer',
@@ -230,6 +271,28 @@ export class OddsNormalizer implements INodeType {
     ],
   };
 
+  /**
+   * Main execution: normalize odds, detect arbitrage, pick best odds per selection.
+   *
+   * WHAT: For each input item, extract odds/format/provider/event/market/selection, validate
+   *   (odds present, numeric, within [minOdds,maxOdds], not stale), convert to decimal, compute
+   *   implied probability, group by event:market (or event), then per selection find the best
+   *   odds and detect arbitrage (total implied probability < minMarginPercent). Emits normalized
+   *   odds, arbitrage opportunities, and invalid items to three outputs.
+   * WHY: One canonical odds format lets downstream systems compare across providers; arbitrage
+   *   detection protects the book from sure-loss markets; best-odds selection surfaces the most
+   *   competitive price to traders.
+   * INPUTS: this.getInputData() — n8n input items (item.json = odds data).
+   * OUTPUTS: INodeExecutionData[][] — [normalizedOutput, arbitrageOutput, errorOutput].
+   * SIDE EFFECTS: none external; mutates normalized output items to set isBestOdds/
+   *   arbitrageMargin.
+   * FAILURE MODES: invalid/missing/stale odds → error output (item continues to other items);
+   *   a single bad item never aborts the whole batch.
+   * ALTERNATIVE: normalize in the ingestion service (Python). Chosen an n8n node so the
+   *   business users can configure formats/thresholds in the UI without a redeploy.
+   * # INTERVIEW: implied probability = 1/decimal_odds; arbitrage margin = (1 - total implied
+   *   probability) * 100; positive margin = guaranteed-profit arb opportunity.
+   */
   async execute(this: IExecuteFunctions): Promise<INodeExecutionData[][]> {
     const items = this.getInputData();
     const normalizedOutput: INodeExecutionData[] = [];

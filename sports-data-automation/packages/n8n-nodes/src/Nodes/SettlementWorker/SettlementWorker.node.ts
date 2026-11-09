@@ -1,3 +1,41 @@
+/**
+ * packages/n8n-nodes/src/Nodes/SettlementWorker/SettlementWorker.node.ts
+ *
+ * FILE HEADER
+ * -----------
+ * Business problem this file solves:
+ *   When a match ends, every bet on that match must be settled (won/lost/void/half_won/
+ *   half_lost) according to sport-specific rules, and the decision must be auditable for
+ *   regulators. SettlementWorker is an n8n custom node that evaluates a declarative Rule DSL
+ *   (JSON) against each bet+event, picks the highest-priority matching rule, computes a
+   * confidence, auto-settles above a threshold, and routes lower-confidence cases to human
+   * review — with a full audit trail (rule set version, evaluated rules, confidence breakdown).
+ *
+ * Where it sits in the flow:
+ *   After the event feed reports a match as "ended". Consumes settled events + bet data and
+   * emits three outputs: Settled (auto), Pending Review, Errors. Settled results feed CRM
+   * notifications, payouts, and risk exposure updates.
+ *
+ * What calls it / what it calls:
+ *   Called by: n8n workflow engine (execute()), triggered by settlement events.
+ *   Calls: nothing external (pure in-node rule engine); private helpers evaluateRules/
+   *   evaluateCondition/getFieldValue/resolveValue/compare.
+ *
+ * What breaks if removed:
+ *   No automated settlement — every match end needs manual payout calculation, slow and
+   * error-prone, with no audit trail for regulatory compliance.
+ *
+ * Language conventions:
+ *   TypeScript/n8n custom node. Three Main outputs (Settled/Pending Review/Errors). Rule DSL
+   * is JSON (embedded in node config, or DB/remote in production).
+ *
+ * # GAP: rule-set hot-reload from Database/Remote config is declared in the UI but not
+ *   implemented — only the embedded JSON path works. See 07_issues_found.md.
+ * # INTERVIEW: default outcome is "void" (never pay on an unmatched/unknown match) — safer to
+   * withhold than to pay on a bad rule; confidence combines rule priority with exact-score
+   * bonuses.
+ */
+
 import {
   INodeType,
   INodeTypeDescription,
@@ -7,6 +45,10 @@ import {
 } from 'n8n-workflow';
 
 export class SettlementWorker implements INodeType {
+  /**
+   * n8n node metadata and parameters (rule set version/source, embedded JSON DSL, bet/event
+   * field names, confidence threshold, partial settlement, audit trail). Drives the UI panel.
+   */
   description: INodeTypeDescription = {
     displayName: 'Settlement Worker',
     name: 'settlementWorker',
@@ -129,6 +171,30 @@ export class SettlementWorker implements INodeType {
     ],
   };
 
+  /**
+   * Main execution: evaluate the settlement rule DSL against each bet+event and route output.
+   *
+   * WHAT: Loads the rule set (embedded JSON, or DB/remote fallback → default), validates the
+   *   version, then for each item extracts bet + event, evaluates all rules (sorted by
+   *   priority, highest match wins), determines outcome (default to the rule set default,
+   *   usually "void"), computes confidence from rule priority + exact-score bonus, and builds a
+   *   settlement result with an audit trail. Routes to Settled (confidence >= threshold),
+   *   Pending Review (below threshold or partial), or Errors (missing bet/event).
+   * WHY: Settlement decides payouts; a declarative DSL lets business users change rules
+   *   without a code deploy, and the audit trail (which rule matched, confidence breakdown,
+   *   timestamps) satisfies regulatory and dispute requirements.
+   * INPUTS: this.getInputData() — items with bet (betDataField) and event (eventDataField).
+   * OUTPUTS: INodeExecutionData[][] — [settledOutput, pendingReviewOutput, errorOutput].
+   * SIDE EFFECTS: none external; adds settlement + _audit fields to each item.
+   * FAILURE MODES: missing bet/event → error output; invalid embedded JSON → falls back to
+   *   default rule set (degrades gracefully, never crashes); version mismatch → warning only.
+   * ALTERNATIVE: settlement as a SQL stored procedure or Python service. Chosen an n8n node
+   *   so rules are visible/configurable in the UI and the audit trail is produced per-event.
+   * # INTERVIEW: confidence = 0.5 + 0.4 * (matched priority / max priority), +0.1 for exact
+   *   score matches; threshold default 0.95 — only high-confidence auto-settles.
+   * # BUSINESS: wrong settlement = wrong payout = regulatory fine + customer dispute; the
+   *   void default + human-review queue are the safety net.
+   */
   async execute(this: IExecuteFunctions): Promise<INodeExecutionData[][]> {
     const items = this.getInputData();
     const settledOutput: INodeExecutionData[] = [];

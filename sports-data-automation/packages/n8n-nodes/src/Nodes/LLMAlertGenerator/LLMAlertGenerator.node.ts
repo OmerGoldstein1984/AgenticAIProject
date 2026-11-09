@@ -1,3 +1,42 @@
+/**
+ * packages/n8n-nodes/src/Nodes/LLMAlertGenerator/LLMAlertGenerator.node.ts
+ *
+ * FILE HEADER
+ * -----------
+ * Business problem this file solves:
+ *   Ops teams can't watch every feed, and raw anomaly data (odds spike, settlement mismatch,
+ *   feed outage) is hard to act on. LLMAlertGenerator is an n8n custom node that sends anomaly
+ *   context to an LLM (Anthropic Claude or OpenAI) with few-shot prompting and a structured
+   * JSON schema, then routes the result: high-confidence alerts auto-escalate, low-confidence
+   * go to a human-review queue, and parse/API errors go to an error output. It also compares
+   * against a rule-based baseline to measure LLM agreement.
+ *
+ * Where it sits in the flow:
+ *   After routing/normalization/settlement nodes detect an anomaly. Consumes anomaly details
+   * and emits three outputs: Auto-Escalate (high confidence + baseline agrees), Human Review
+   * (below threshold or baseline disagrees), Errors (no API key / parse failure).
+ *
+ * What calls it / what it calls:
+ *   Called by: n8n workflow engine (execute()), triggered by anomaly events.
+ *   Calls: (placeholder) the Anthropic/OpenAI SDK — currently commented out and replaced by
+   *   simulated responses for development (see callLLM / getSimulatedResponse).
+ *
+ * What breaks if removed:
+ *   No automated anomaly triage — ops would manually scan dashboards, slower and with no
+   * confidence scoring or human-review queue.
+ *
+ * Language conventions:
+ *   TypeScript/n8n custom node. Three Main outputs (Auto-Escalate/Human Review/Errors). LLM
+   * call is currently simulated (SDK code commented out).
+ *
+ * # GAP: the real Anthropic/OpenAI SDK calls are commented out; getSimulatedResponse returns
+ *   canned replies, so the node doesn't actually call an LLM in this build. API key is read
+ *   from node config or env var. See 07_issues_found.md.
+ * # INTERVIEW: LLM is used for high-variance, human-readable classification (alert text),
+   * never for auto-acting — low confidence goes to human review, and a rule-based baseline
+   * measures agreement (shadow-mode / eval pattern).
+ */
+
 import {
   INodeType,
   INodeTypeDescription,
@@ -7,6 +46,11 @@ import {
 } from 'n8n-workflow';
 
 export class LLMAlertGenerator implements INodeType {
+  /**
+   * n8n node metadata and parameters (provider, model, API key, anomaly type, confidence
+   * threshold, few-shot examples, system prompt, output schema, temperature/maxTokens,
+   * rule-based baseline, human-review queue). Drives the UI panel.
+   */
   description: INodeTypeDescription = {
     displayName: 'LLM Alert Generator',
     name: 'llmAlertGenerator',
@@ -169,6 +213,33 @@ export class LLMAlertGenerator implements INodeType {
     ],
   };
 
+  /**
+   * Main execution: build an LLM prompt per item, call the LLM, parse structured JSON, and
+   * route by confidence vs. the rule-based baseline.
+   *
+   * WHAT: Reads node config (provider/model/API key/anomaly type/threshold/few-shot/schema/...
+   * ). If no API key, all items go to the error output. Otherwise, for each item it builds a
+   *   system prompt (default + few-shot + schema) and a user prompt (event data + anomaly
+   *   details), calls the LLM (currently simulated), parses the JSON response, validates the
+   *   required fields, clamps confidence to [0,1], compares to a rule-based baseline, and
+   *   routes: confidence >= threshold && agreed → Auto-Escalate; otherwise Human Review.
+   * WHY: LLMs are good at producing readable, contextual alert text but can hallucinate; the
+   *   structured schema + confidence threshold + human-review queue + baseline comparison make
+   *   LLM use safe in production (human-in-the-loop).
+   * INPUTS: this.getInputData() — items with eventData + anomalyDetails.
+   * OUTPUTS: INodeExecutionData[][] — [autoEscalateOutput, humanReviewOutput, errorOutput].
+   * SIDE EFFECTS: none external (simulated LLM); builds alert + _llmEvaluation metadata.
+   * FAILURE MODES: missing API key → all items to error output; unparseable LLM response →
+   *   error output for that item (other items continue); missing required fields → error.
+   *   LLM exceptions are caught per-item, never abort the batch.
+   * ALTERNATIVE: pure rule-based alerts (deterministic but rigid). Chosen LLM + baseline
+   *   because alerts need human-readable context and the baseline keeps the LLM honest.
+   * # INTERVIEW: temperature 0.1 keeps output consistent/structured; confidence threshold
+   *   (default 0.8) decides auto-escalate vs human review; baseline agreement is the eval
+   *   metric for LLM precision.
+   * # BUSINESS: a wrong alert wakes on-call unnecessarily (alert fatigue); a missed alert
+   *   costs trading money. Confidence + human review balance both.
+   */
   async execute(this: IExecuteFunctions): Promise<INodeExecutionData[][]> {
     const items = this.getInputData();
     const autoEscalateOutput: INodeExecutionData[] = [];

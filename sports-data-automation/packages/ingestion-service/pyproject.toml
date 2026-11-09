@@ -1,3 +1,14 @@
+# pyproject.toml for ingestion-service
+# ====================================
+# Declares the Python package metadata, runtime dependencies (fastapi, uvicorn, redis,
+# httpx, websockets, jsonschema, prometheus-client, tenacity, ...), dev dependencies
+# (pytest, mypy, ruff), pytest config (asyncio_mode=auto), ruff/mypy settings, and
+# package discovery (where="src", include="ingestion*").
+# # INTERVIEW: `asyncio_mode = "auto"` lets pytest handle async tests without asyncio markers.
+# # GAP: dev deps installed into the image via Dockerfile (bloat); no lockfile committed.
+# # GAP: the package references modules under src/ingestion but there are no tests/ in the repo.
+#
+
 [build-system]
 requires = ["setuptools>=68.0", "wheel"]
 build-backend = "setuptools.build_meta"

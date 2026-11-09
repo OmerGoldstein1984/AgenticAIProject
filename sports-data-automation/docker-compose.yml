@@ -1,3 +1,38 @@
+# docker-compose.yml
+# ==================
+# FILE HEADER
+# -----------
+# Business problem this file solves:
+#   Running the full platform locally (Postgres/TimescaleDB, Redis, n8n, ingestion service,
+#   mock providers, Prometheus, Grafana, Alertmanager) by hand is error-prone and inconsistent.
+#   This Compose file declares the entire stack as versionable, reproducible services so one
+#   `docker compose up -d` brings up a dev environment that mirrors production.
+#
+# Where it sits in the flow:
+#   Infrastructure/deployment layer — the runtime host for every service. Defines networking,
+#   volumes, healthchecks, dependencies, and port mappings.
+#
+# What calls it / what it calls:
+#   Called by: `docker compose` / Makefile targets (make up/down/build/logs). Developers and CI
+#   (docker-build job in ci.yml).
+#   Calls: pulls public images (timescaledb, redis, n8n, prom, grafana, alertmanager) and builds
+#   the local images (ingestion-service, mock-providers).
+#
+# What breaks if removed:
+#   No one-command local stack; every service must be started and wired manually.
+#
+# Language conventions:
+#   Compose spec version 3.8. `depends_on: condition: service_healthy` enforces startup order.
+#   Volumes persist DB/Redis/n8n/Grafana data across restarts.
+#
+# # INTERVIEW: healthchecks + depends_on condition ensure n8n/ingestion don't start before
+#    Postgres and Redis are ready — avoids cascading startup failures.
+# # GAP: references a `processing-engine` service and `./scripts/init-db.sql` that don't exist
+#    in this repo — `docker compose up` will fail on those. See 07_issues_found.md.
+# # GAP: mounts ./packages/n8n-nodes/dist into n8n, but dist/ isn't built in the repo (no
+#    build step produces it). See 07_issues_found.md.
+#
+
 version: '3.8'
 
 services:

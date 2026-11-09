@@ -1,4 +1,36 @@
-"""Main entry point for the ingestion service."""
+"""Main entry point for the ingestion service.
+
+FILE HEADER
+-----------
+Business problem this file solves:
+    The ingestion service is the gateway between raw provider feeds (WebSocket odds, REST
+    events/settlements) and the downstream n8n orchestration layer. It must accept data from
+    multiple providers, validate it, normalize it to the canonical schema, deduplicate it, and
+    forward it to n8n — all while emitting metrics, staying up under load, and never losing or
+    duplicating data. main.py wires all of that together as a FastAPI application.
+
+Where it sits in the flow:
+    The central INGESTION SERVICE (stage 2 of the pipeline, after mock providers, before n8n).
+    lifespan() constructs and starts SchemaValidator, CanonicalTransformer, Deduplicator,
+    WebSocketClient, and RESTPoller; HTTP endpoints /ingest/{event,odds,settlement} allow
+    manual injection; process_* functions run validate → transform → deduplicate → forward.
+
+What calls it / what it calls:
+    Called by: uvicorn (docker-compose / CMD); tests (import app).
+    Calls: ingestion.config.get_settings; providers.websocket_client.WebSocketClient;
+    providers.rest_poller.RESTPoller; normalization.schema_validator.SchemaValidator;
+    normalization.canonical_transformer.CanonicalTransformer; idempotency.deduplicator.Deduplicator;
+    ingestion.metrics (setup_metrics, metrics_middleware); n8n webhook via httpx.
+What breaks if removed:
+    The entire ingestion service — no validation, normalization, dedup, or forwarding to n8n.
+    This is the single entry point; nothing else substitutes for it.
+Language conventions:
+    Python 3.11+. FastAPI with lifespan context manager, async/await throughout, httpx for
+    outbound webhooks, logging via stdlib. Prometheus metrics exposed at /metrics.
+GAP: forward_to_n8n swallows exceptions ("In production, send to dead letter queue") — a
+    n8n outage silently drops data. See 07_issues_found.md. Also, metrics.py's metrics_middleware
+    uses await in a non-async function (syntax error) — see 07_issues_found.md.
+"""
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -22,7 +54,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Global service instances
+# Global service instances — set in lifespan(), read by process_* functions
 websocket_client: WebSocketClient | None = None
 rest_poller: RESTPoller | None = None
 schema_validator: SchemaValidator | None = None
@@ -32,7 +64,25 @@ deduplicator: Deduplicator | None = None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Application lifespan manager."""
+    """Application lifespan manager: startup → yield → shutdown.
+
+    WHAT: On startup, reads settings, constructs SchemaValidator (loads schemas),
+        CanonicalTransformer, Deduplicator (connects to Redis), WebSocketClient (connects to the
+        odds feed), and RESTPoller (starts polling event/settlement endpoints). On shutdown,
+        disconnects them in reverse order.
+    WHY: FastAPI lifespan guarantees resources are initialized before the app accepts traffic
+        and released cleanly on `docker compose down`/reload.
+    INPUTS: app (the FastAPI instance).
+    OUTPUTS: yields control to the app; nothing returned.
+    SIDE EFFECTS: sets the module-level global service instances; opens Redis, WebSocket, and
+        HTTP-poller connections.
+    FAILURE MODES: if Redis is down, Deduplicator.connect() re-raises and lifespan aborts
+        startup (fail-fast — better than accepting traffic with no dedup).
+    ALTERNATIVE: initialize each component lazily on first request. Chosen eager startup so
+        configuration errors surface immediately at deploy time, not mid-traffic.
+    # INTERVIEW: lifespan is the modern FastAPI replacement for @app.on_event("startup") /
+    #    ("shutdown"); it guarantees setup/teardown pairing.
+    """
     global websocket_client, rest_poller, schema_validator, canonical_transformer, deduplicator
 
     settings = get_settings()
@@ -93,7 +143,7 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# CORS
+# CORS — allow cross-origin calls (dev-friendly; tighten origins in production)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -102,16 +152,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Metrics middleware
+# Metrics middleware (records HTTP request count + duration for every request)
 app.middleware("http")(metrics_middleware)
 
-# Setup Prometheus metrics
+# Setup Prometheus metrics endpoint at /metrics
 setup_metrics(app)
 
 
 @app.get("/health")
 async def health_check():
-    """Health check endpoint."""
+    """Health check endpoint reporting whether each sub-service is connected/running."""
     return {
         "status": "healthy",
         "services": {
@@ -124,7 +174,7 @@ async def health_check():
 
 @app.get("/metrics")
 async def metrics():
-    """Prometheus metrics endpoint."""
+    """Prometheus metrics endpoint (scraped by Prometheus)."""
     from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
     from fastapi.responses import Response
     return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
@@ -132,7 +182,7 @@ async def metrics():
 
 @app.post("/ingest/event")
 async def ingest_event(request: Request):
-    """Manual event ingestion endpoint."""
+    """Manual event ingestion endpoint (used for demos / testing)."""
     try:
         data = await request.json()
         result = await process_event(data)
@@ -167,25 +217,42 @@ async def ingest_settlement(request: Request):
 
 
 async def handle_odds_message(message: dict):
-    """Handle incoming WebSocket odds message."""
+    """Callback invoked by WebSocketClient for each incoming odds message."""
     logger.debug(f"Received odds message: {message.get('eventId', 'unknown')}")
     await process_odds(message)
 
 
 async def handle_event_message(message: dict):
-    """Handle incoming REST event message."""
+    """Callback invoked by RESTPoller for each fetched event."""
     logger.debug(f"Received event message: {message.get('id', 'unknown')}")
     await process_event(message)
 
 
 async def handle_settlement_message(message: dict):
-    """Handle incoming REST settlement message."""
+    """Callback invoked by RESTPoller for each fetched settlement."""
     logger.debug(f"Received settlement message: {message.get('eventId', 'unknown')}")
     await process_settlement(message)
 
 
 async def process_odds(data: dict) -> dict:
-    """Process odds through validation, transformation, and deduplication."""
+    """Run one odds item through validate → transform → deduplicate → forward.
+
+    WHAT: Validates against the "odds" schema, transforms to canonical odds, dedups on
+        odds:{providerId}:{eventId}:{sequence}, then forwards to n8n. Returns a status dict.
+    WHY: This is the core per-item pipeline for the highest-volume feed. Each stage is a gate:
+        invalid data is rejected, duplicates are dropped, only clean canonical odds reach n8n.
+    INPUTS: data (raw provider odds dict).
+    OUTPUTS: dict with status in {"processed","rejected","duplicate"} plus eventId/reason/errors.
+    SIDE EFFECTS: writes to Redis (dedup), calls schema_validator/canonical_transformer,
+        forwards an HTTP webhook to n8n.
+    FAILURE MODES: n8n forward failure is logged and swallowed (data dropped — see GAP).
+    ALTERNATIVE: enqueue to a reliable queue (Redis Streams/Kafka) instead of a direct webhook,
+        so a n8n outage doesn't lose data. Chosen direct webhook for simplicity in this project.
+    # GAP: forward_to_n8n catches all exceptions and just logs — no dead-letter queue, no retry.
+    #    A n8n outage loses odds. See 07_issues_found.md.
+    # BUSINESS: odds feed every 500ms-2s; losing a price update means a stale market and
+    #    potential trading loss.
+    """
     settings = get_settings()
 
     # Validate
@@ -215,7 +282,7 @@ async def process_odds(data: dict) -> dict:
 
 
 async def process_event(data: dict) -> dict:
-    """Process event through validation, transformation, and deduplication."""
+    """Run one event item through validate → transform → deduplicate → forward."""
     settings = get_settings()
 
     # Validate
@@ -245,7 +312,7 @@ async def process_event(data: dict) -> dict:
 
 
 async def process_settlement(data: dict) -> dict:
-    """Process settlement through validation, transformation, and deduplication."""
+    """Run one settlement item through validate → transform → deduplicate → forward."""
     settings = get_settings()
 
     # Validate
@@ -275,7 +342,21 @@ async def process_settlement(data: dict) -> dict:
 
 
 async def forward_to_n8n(data_type: str, data: dict):
-    """Forward processed data to n8n webhook."""
+    """POST the canonical payload to the n8n webhook for this data type.
+
+    WHAT: httpx.AsyncClient POST to {n8n_webhook_url}/{data_type} with a 10s timeout.
+    WHY: n8n is the orchestration layer — once data is validated/normalized/deduped here, it's
+        handed to n8n for event routing, odds normalization, settlement, and alerting.
+    INPUTS: data_type ("odds"|"event"|"settlement"), data (canonical dict).
+    OUTPUTS: None.
+    SIDE EFFECTS: makes an outbound HTTP request to n8n.
+    FAILURE MODES: any exception (n8n down, timeout, DNS) is caught, logged, and swallowed —
+        data is silently dropped (see GAP).
+    ALTERNATIVE: push to Redis Streams with a dead-letter queue and retry, so n8n outages
+        don't lose data. Chosen direct webhook for simplicity.
+    # GAP: no dead-letter queue or retry — a n8n outage loses every event forwarded in that
+    #    window. See 07_issues_found.md.
+    """
     settings = get_settings()
     import httpx
 
@@ -292,6 +373,7 @@ async def forward_to_n8n(data_type: str, data: dict):
 
 
 if __name__ == "__main__":
+    """Allow `python -m ingestion.main` or `python src/main.py` to run the service directly."""
     settings = get_settings()
     uvicorn.run(
         "src.main:app",

@@ -1,4 +1,33 @@
 # Dockerfile for Ingestion Service
+# ================================
+# FILE HEADER
+# -----------
+# Business problem this file solves:
+#   The ingestion service (Python/FastAPI) needs a reproducible, minimal, secure container image
+#   that installs system deps (gcc, libpq-dev for psycopg/asyncpg), Python dependencies, copies
+#   source, runs as a non-root user, and exposes port 8000 — so `docker compose build` yields a
+#   production-like image that runs identically in dev, CI, and prod.
+#
+# Where it sits in the flow:
+#   Build layer for the ingestion-service service in docker-compose.yml.
+#
+# What calls it / what it calls:
+#   Called by: docker-compose (ingestion-service service, build context ./packages/ingestion-service).
+#   Calls: docker build (FROM python:3.11-slim, pip install, apt-get).
+#
+# What breaks if removed:
+#   No container image for the ingestion service; the stack can't run it.
+#
+# Language conventions:
+#   Dockerfile. Multi-concern single stage: system deps → Python deps → source → non-root user
+#   (appuser, uid 1000) → EXPOSE 8000 → CMD uvicorn.
+#
+# # INTERVIEW: running as non-root (appuser) is a production security practice; the CMD matches
+#    docker-compose's command override (uvicorn with --reload in dev).
+# # GAP: `pip install -e ".[dev]"`` installs dev tools (pytest, mypy, ruff) into the image,
+#    bloating it; a production image would split runtime/dev. See 07_issues_found.md.
+#
+
 FROM python:3.11-slim
 
 WORKDIR /app

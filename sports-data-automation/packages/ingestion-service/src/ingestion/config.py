@@ -1,4 +1,34 @@
-"""Configuration management for ingestion service."""
+"""
+Configuration management for ingestion service.
+
+FILE HEADER
+-----------
+Business problem this file solves:
+    The ingestion service needs to know where Redis, Postgres, n8n, and the provider feeds live,
+    how often to poll, how long to keep dedup keys, and where the schema registry is — and those
+    values differ between a dev laptop (localhost), CI, and production. Settings centralizes all
+    configuration as environment-variable-backed Pydantic settings so the same code runs in every
+    environment without code changes.
+
+Where it sits in the flow:
+    Bootstrap layer for the ingestion service. main.py calls get_settings() in lifespan() to
+    construct SchemaValidator, CanonicalTransformer, Deduplicator, WebSocketClient, and RESTPoller.
+    Every runtime value the service needs flows through this module.
+
+What calls it / what it calls:
+    Called by: packages/ingestion-service/src/ingestion/main.py (get_settings in lifespan and
+    each process_* function).
+    Calls: nothing from this repo (pydantic-settings, pydantic, stdlib os).
+What breaks if removed:
+    The ingestion service cannot locate Redis/Postgres/n8n/providers; get_settings() returns an
+    incompletely-configured object and lifespan() fails to initialize subcomponents.
+Language conventions:
+    Python 3.11+. Pydantic-settings BaseSettings with Field(alias=...) for env var names.
+    Field defaults are dev-friendly localhost values; production overrides via .env / env vars.
+    `extra = "ignore"` so unknown env vars don't crash startup.
+GAP: No validation that required secrets (e.g. POSTGRES_PASSWORD) are actually set; dev defaults
+    like "changeme" would silently reach production if .env is missing. See 07_issues_found.md.
+"""
 from pydantic_settings import BaseSettings
 from pydantic import Field
 from typing import List, Dict, Optional
@@ -6,6 +36,24 @@ import os
 
 
 class Settings(BaseSettings):
+    """All runtime configuration for the ingestion service, sourced from env vars.
+
+    WHAT: Pydantic-settings model mapping env vars (PORT, REDIS_URL, POSTGRES_DSN, ...)
+        to typed fields with dev-friendly defaults.
+    WHY: One place to configure the service; environment-driven config means the same Docker
+        image runs in dev/CI/prod with only env changes (12-factor app principle).
+    EXAMPLE:
+        Settings()  # reads .env and environment; redis_url defaults to redis://localhost:6379/0
+    INPUTS: none (reads os.environ + .env automatically).
+    OUTPUTS: a Settings instance with typed fields.
+    SIDE EFFECTS: reads .env file (env_file=".env") on first instantiation.
+    FAILURE MODES: Pydantic validation error if an env var has the wrong type (e.g. PORT=abc).
+    ALTERNATIVE: read env vars manually with os.getenv. Chosen pydantic-settings for type
+        coercion, validation, and a single source of truth.
+    # INTERVIEW: env_file + extra="ignore" means this never crashes on unknown CI env vars,
+    #    but also never warns you about a typo'd variable (e.g. REDIES_URL). Trade-off: silent
+    #    misconfiguration is possible.
+    """
     # Service
     port: int = Field(default=8000, alias="PORT")
     debug: bool = Field(default=True, alias="DEBUG")
@@ -78,7 +126,23 @@ _settings: Optional[Settings] = None
 
 
 def get_settings() -> Settings:
-    """Get cached settings instance."""
+    """Return a cached, singleton Settings instance.
+
+    WHAT: Creates Settings() once and caches it in the module-level _settings; every subsequent
+        call returns the same object.
+    WHY: Avoids re-reading .env and re-validating on every call; process-wide config is consistent.
+        Each process_* function in main.py calls get_settings() to read current values at request
+        time (so env changes within a process would be reflected — though with the singleton they
+        won't change after first call).
+    INPUTS: none.
+    OUTPUTS: the cached Settings instance.
+    SIDE EFFECTS: mutates module-global _settings on first call.
+    FAILURE MODES: propagates Settings validation error on first call if env is invalid.
+    ALTERNATIVE: pass a Settings instance into each component (dependency injection). Chosen a
+        module singleton for simplicity; DI would be more testable but adds plumbing.
+    # GAP: because it's a singleton cached at import time, tests cannot easily override settings
+    #    per-test without monkeypatching _settings. See 07_issues_found.md.
+    """
     global _settings
     if _settings is None:
         _settings = Settings()

@@ -1,4 +1,35 @@
-"""Mock REST event and settlement feed server."""
+"""
+Mock REST event and settlement feed server.
+
+FILE HEADER
+-----------
+Business problem this file solves:
+    The ingestion service polls REST endpoints for match events and settlements, but a real
+    provider's event/settlement API is expensive, rate-limited, and not always available during
+    development. MockEventFeed is a self-contained FastAPI server that exposes /events and
+    /settlements endpoints (with filtering, pagination, and a /simulate endpoint to mutate state
+    on demand), giving the ingestion service a realistic REST source to develop against.
+
+Where it sits in the flow:
+    Upstream DATA SOURCE (leaf producer), sibling to MockOddsFeed (WebSocket). The ingestion
+    service's RESTPoller (packages/ingestion-service/.../providers/rest_poller.py) polls
+    http://localhost:8081/events and /settlements on intervals, then validates/transforms/
+    deduplicates/forwards to n8n.
+
+What calls it / what it calls:
+    Called by: docker-compose (mock-event-feed service, Dockerfile.events) → python -m mock.event_feed;
+    also polled by ingestion-service RESTPoller at runtime.
+    Calls: nothing from this repo (FastAPI, uvicorn, stdlib only).
+What breaks if removed:
+    The ingestion service has no REST event/settlement source; event routing and settlement in
+    n8n have no data to act on.
+Language conventions:
+    Python 3.11+. FastAPI with Query params, uvicorn server. Runs as `python -m mock.event_feed`
+    (see Dockerfile.events CMD). Port 8081.
+GAP: Data is generated once at startup and kept in memory; /simulate mutates it but there is no
+    persistence, so restarting the server loses all simulated state. No deterministic seed mode.
+    See 07_issues_found.md.
+"""
 import asyncio
 import json
 import logging
@@ -14,9 +45,38 @@ logger = logging.getLogger(__name__)
 
 
 class MockEventFeed:
-    """Simulates REST API for events and settlements."""
+    """Simulates REST API for events and settlements.
+
+    WHAT: A FastAPI app exposing /events (filtered, paginated), /settlements, single-item
+        lookups, and /simulate endpoints to mutate event status or create settlements on demand.
+    WHY: Lets the ingestion service's REST poller be developed and tested against a realistic
+        REST source without a live provider contract. The /simulate endpoints let a demo
+        inject events/settlements to drive the settlement and alert pipeline.
+    INPUTS (constructor): host, port (default 8081), num_events (100).
+    OUTPUTS: none returned; side effect is building self.app (FastAPI) with routes and starting
+        an HTTP server on run().
+    SIDE EFFECTS: generates self.events and self.settlements in memory at construction;
+        binds an HTTP port on run().
+    FAILURE MODES: port already in use → uvicorn fails to bind and the process exits.
+    ALTERNATIVE: read canned fixtures from JSON. Chosen in-code generation for a self-contained
+        mock that can be mutated via /simulate during a live demo.
+    # GAP: no persistence or deterministic seed; state is lost on restart. See 07_issues_found.md.
+    """
 
     def __init__(self, host: str = "0.0.0.0", port: int = 8081, num_events: int = 100):
+        """Build the event/settlement catalog and wire up FastAPI routes.
+
+        WHAT: Sets host/port/num_events, generates self.events (num_events matches) and
+            self.settlements (for ended events), then calls _setup_routes() to register
+            all FastAPI endpoints.
+        WHY: Settlements are derived from ended events at construction so the settlement
+            pipeline has realistic data to consume without waiting for matches to end.
+        INPUTS: host, port, num_events (all optional with defaults).
+        OUTPUTS: None; sets self.events, self.settlements, self.app.
+        SIDE EFFECTS: calls _generate_events and _generate_settlements (uses module-level
+            random, so results vary per process); builds self.app with routes.
+        FAILURE MODES: none (constructor cannot fail meaningfully).
+        """
         self.host = host
         self.port = port
         self.num_events = num_events
@@ -30,7 +90,23 @@ class MockEventFeed:
         self._setup_routes()
 
     def _generate_events(self, count: int) -> List[Dict]:
-        """Generate mock events."""
+        """Generate the mock match catalog.
+
+        WHAT: Builds `count` matches with random sport/league/teams/start time/status/score,
+            deriving status from the match's start time relative to now (future → scheduled,
+            recent → live/half_time/ended, old → ended/cancelled/postponed/abandoned).
+        WHY: A realistic mix of statuses lets the ingestion service and settlement pipeline
+            exercise every code path (live routing, ended settlement, void on cancelled, etc.)
+            without waiting for real matches to finish.
+        INPUTS: count (number of matches).
+        OUTPUTS: list of event dicts (id, sport, league, homeTeam, awayTeam, startTime, status,
+            score, metadata).
+        SIDE EFFECTS: none (pure function of count + random).
+        FAILURE MODES: none.
+        ALTERNATIVE: load from fixture. Chosen generation for a self-contained, varied catalog.
+        # BUSINESS: the mix of statuses directly determines how much settlement work the
+        #    pipeline has; a demo needs a healthy share of "ended" matches so settlement runs.
+        """
         sports = ["football", "basketball", "tennis", "baseball", "hockey"]
         leagues = {
             "football": ["Premier League", "La Liga", "Bundesliga", "Serie A", "Ligue 1", "Champions League"],
@@ -101,7 +177,24 @@ class MockEventFeed:
         return events
 
     def _generate_settlements(self) -> List[Dict]:
-        """Generate mock settlements for ended events."""
+        """Generate mock settlements for ended events.
+
+        WHAT: For each ended event (up to 50), compute a settlement outcome from the score
+            (home/away win, draw, or void 5% of the time) with a settledAt two hours after
+            start and confidence 0.95-1.0.
+        WHY: The settlement pipeline needs official-looking results to consume; pre-generating
+            them means the /settlements endpoint returns data immediately on startup.
+        INPUTS: none (uses self.events).
+        OUTPUTS: list of settlement dicts (eventId, marketId, selectionId, outcome, settledAt,
+            source, confidence).
+        SIDE EFFECTS: none (reads self.events only).
+        FAILURE MODES: none.
+        ALTERNATIVE: fetch settlements from a real odds provider's results API. Chosen
+            in-code derivation because no provider credentials exist here.
+        # BUSINESS: settlement outcome drives payouts; getting it wrong (e.g. mis-handling a
+        #    tennis retirement) is a regulatory and financial issue. The mock models a clean
+        #    "official" source so the settlement engine can be validated against it.
+        """
         settlements = []
         ended_events = [e for e in self.events if e["status"] == "ended"]
 
@@ -154,10 +247,25 @@ class MockEventFeed:
         return settlements
 
     def _setup_routes(self):
-        """Setup FastAPI routes."""
+        """Register all FastAPI routes on self.app.
+
+        WHAT: Defines /health, /events (list with filtering/pagination), /events/{event_id},
+            /settlements (list with filtering/pagination),
+            /settlements/{event_id}/{market_id}/{selection_id}, and two /simulate endpoints
+            (mutate event status / create a settlement).
+        WHY: These endpoints mirror the shape of a real sports-data provider's REST API so the
+            ingestion service's RESTPoller can be tested against a realistic contract.
+        INPUTS: none (uses self.events, self.settlements).
+        OUTPUTS: None; side effect is decorating self.app with route handlers.
+        SIDE EFFECTS: none beyond route registration.
+        FAILURE MODES: route handlers raise HTTPException(404) for missing items and
+            HTTPException(400)/409 for bad input — these are FastAPI's normal error responses.
+        ALTERNATIVE: None needed; this is the mock's entire surface area.
+        """
 
         @self.app.get("/health")
         async def health():
+            """Health endpoint: report how many events/settlements are loaded."""
             return {"status": "healthy", "events": len(self.events), "settlements": len(self.settlements)}
 
         @self.app.get("/events")
@@ -169,7 +277,21 @@ class MockEventFeed:
             league: Optional[str] = Query(default=None),
             since: Optional[str] = Query(default=None),
         ):
-            """Get events with filtering and pagination."""
+            """Get events with filtering and pagination.
+
+            WHAT: Filters self.events by sport/status/league/since, paginates [offset:offset+limit],
+                and returns {data, pagination: {total, limit, offset, has_more}}.
+            WHY: Real providers paginate; the ingestion poller must handle pagination and
+                incremental fetching (since) rather than re-fetching everything.
+            INPUTS: query params limit/offset/sport/status/league/since.
+            OUTPUTS: dict with data (list) and pagination metadata.
+            SIDE EFFECTS: none (reads self.events only).
+            FAILURE MODES: invalid `since` format → HTTPException(400).
+            ALTERNATIVE: return all events unpaginated. Chosen pagination because real feeds are
+                large and the poller must handle cursors/pages.
+            # INTERVIEW: pagination + `since` is how the poller avoids re-processing the same
+            #    events on every poll — key to efficient, idempotent ingestion.
+            """
             filtered = self.events
 
             if sport:
@@ -258,7 +380,7 @@ class MockEventFeed:
 
         @self.app.post("/events/simulate")
         async def simulate_event_update():
-            """Simulate a random event update (for testing)."""
+            """Simulate a random event update (for testing/demo)."""
             if not self.events:
                 raise HTTPException(status_code=404, detail="No events available")
 
@@ -286,7 +408,7 @@ class MockEventFeed:
 
         @self.app.post("/settlements/simulate")
         async def simulate_settlement():
-            """Simulate a new settlement (for testing)."""
+            """Simulate a new settlement (for testing/demo)."""
             live_events = [e for e in self.events if e["status"] == "ended"]
             if not live_events:
                 raise HTTPException(status_code=404, detail="No ended events available")
@@ -338,7 +460,17 @@ class MockEventFeed:
             return {"status": "created", "settlement": settlement}
 
     async def run(self):
-        """Run the server."""
+        """Run the FastAPI server with uvicorn.
+
+        WHAT: Builds a uvicorn.Config around self.app and serves forever.
+        WHY: Entry point called by main(); makes the mock actually listen on HTTP.
+        INPUTS: none (uses self.host, self.port, self.app).
+        OUTPUTS: None; runs until cancelled.
+        SIDE EFFECTS: binds an HTTP port and blocks the event loop.
+        FAILURE MODES: port in use → uvicorn fails to bind, process exits.
+        ALTERNATIVE: run with `uvicorn mock.event_feed:app` from CLI. Chosen programmatic run
+            so main() can install signal handlers for clean shutdown.
+        """
         config = uvicorn.Config(
             app=self.app,
             host=self.host,
@@ -350,7 +482,18 @@ class MockEventFeed:
 
 
 async def main():
-    """Main entry point."""
+    """Main entry point: build the feed, handle signals, run the server.
+
+    WHAT: Reads HOST/PORT from env, builds MockEventFeed, installs SIGTERM/SIGINT handlers that
+        stop the loop, then runs feed.run() until cancelled.
+    WHY: Standard async service entry point with clean shutdown for `docker compose stop`/Ctrl+C.
+    INPUTS: none (env vars HOST, PORT).
+    OUTPUTS: None; runs until cancelled.
+    SIDE EFFECTS: binds HTTP port 8081, installs signal handlers, blocks the event loop.
+    FAILURE MODES: if run() fails (port in use), the exception propagates and the process exits.
+    ALTERNATIVE: `uvicorn mock.event_feed:app --reload` for dev. Chosen programmatic run for
+        deterministic signal handling in docker/tests.
+    """
     import os
 
     logging.basicConfig(

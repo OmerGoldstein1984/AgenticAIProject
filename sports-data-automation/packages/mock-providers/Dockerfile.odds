@@ -1,4 +1,8 @@
 # Dockerfile for Mock Odds Feed
+# =============================
+# Builds the mock WebSocket odds provider (python -m mock.odds_feed) on port 8080.
+# Non-root user, exposes 8080, installs deps from pyproject.toml.
+# # GAP: no .dockerignore, so dev files could be copied into the image. See 07_issues_found.md.
 FROM python:3.11-slim
 
 WORKDIR /app

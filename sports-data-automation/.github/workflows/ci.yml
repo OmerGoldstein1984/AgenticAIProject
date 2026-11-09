@@ -1,3 +1,36 @@
+# .github/workflows/ci.yml
+# ========================
+# FILE HEADER
+# -----------
+# Business problem this file solves:
+#   Every push to main/develop and every pull request must be validated (lint, test, type-check,
+#   docker build) before it can break production. This GitHub Actions workflow automates that so
+#   bad code is caught in CI, not by a trader during a live match.
+#
+# Where it sits in the flow:
+#   CI/CD layer — the quality gate that runs on every change, before deploy-staging /
+#   deploy-production.
+#
+# What calls it / what it calls:
+#   Called by: GitHub Actions on push (main, develop) and pull_request (main).
+#   Calls: actions/checkout, setup-node, setup-python, npm ci, npm test/lint/build, pip,
+#   pytest, docker compose.
+#
+# What breaks if removed:
+#   No automated quality gate; changes merge untested.
+#
+# Language conventions:
+#   GitHub Actions YAML. Jobs: lint-and-test, type-check, docker-build, deploy-staging,
+#   deploy-production (gated by branch/environment).
+#
+# # INTERVIEW: CI runs lint + test + type-check + docker-build before any deploy — know this so
+#    you can speak to the quality gate. deploy-staging/deploy-production are placeholders
+#    (echo only) — real deploy commands not implemented.
+# # GAP: the workflow runs pytest against packages/*/tests/ directories and processing-engine
+#    that don't exist in this repo, so the Python test steps would fail/fall back. See
+#    07_issues_found.md.
+#
+
 name: CI/CD Pipeline
 
 on:

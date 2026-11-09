@@ -1,4 +1,34 @@
 # Makefile for Sports Data Automation Platform
+# ============================================
+# FILE HEADER
+# -----------
+# Business problem this file solves:
+#   The platform has many moving parts (build images, start stack, run migrations, seed data,
+#   run tests, seed demo data, load test). A Makefile gives developers and the interview demo a
+#   single, documented command for each operation instead of remembering long docker commands.
+#
+# Where it sits in the flow:
+#   Developer experience / operations layer — the CLI front end to docker-compose and the
+#   services. Not part of the data path; used by humans and CI.
+#
+# What calls it / what it calls:
+#   Called by: developers (make dev-setup, make up, make demo-data, make test) and CI.
+#   Calls: docker compose, docker system, pytest (inside containers), npm (n8n-nodes).
+#
+# What breaks if removed:
+#   No convenient commands; every operation requires typing long docker commands by hand.
+#
+# Language conventions:
+#   GNU Make. .PHONY targets. `$*` for stem targets (logs-%, shell-%). Commands prefixed with
+#   `-` ignore non-zero exit (e.g. test targets print a fallback message when tests don't exist).
+#
+# # INTERVIEW: `make interview-prep` (clean + dev-setup + demo-data) is the "fresh start" for
+#    the demo — know it so the stack is reproducible on interview day.
+# # GAP: many targets reference things that don't exist (tests/, alembic migrations,
+#    scripts.seed_demo_data, scripts.demo_scenario, processing-engine) — they print a fallback
+#    "not yet implemented" message instead of failing. See 07_issues_found.md.
+#
+
 .PHONY: help up down logs test build clean dev-setup demo-data load-test migrate seed shell-%
 
 # Default target
