@@ -157,14 +157,12 @@ class MetricsMiddleware(BaseHTTPMiddleware):
         return response
 
 
-def metrics_middleware(request: Request, call_next):
+async def metrics_middleware(request: Request, call_next):
     """Function-based middleware for metrics (alternative to the class-based one).
 
-    # BUG: declared `def` (not `async def`) but uses `await call_next(request)` — a SyntaxError
-    # ("'await' outside async function"). This prevents metrics.py from being imported, which
-    # breaks `from ingestion.metrics import setup_metrics, metrics_middleware` in main.py and
-    # therefore the entire ingestion service. Left unfixed per the no-code-change rule; see
-    # 07_issues_found.md. To fix: change `def metrics_middleware` to `async def metrics_middleware`.
+    Fixed: declared `async def` so `await call_next(request)` is valid. Previously declared
+    `def`, which raised SyntaxError: 'await' outside async function at import time and broke
+    the entire ingestion service (since main.py imports from metrics.py).
     """
     start_time = time.time()
 
