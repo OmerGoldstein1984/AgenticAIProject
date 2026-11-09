@@ -1,0 +1,476 @@
+openapi: 3.0.3
+info:
+  title: Sports Data Ingestion Service API
+  description: |
+    Normalizes, validates, and deduplicates sports data feeds (WebSocket odds,
+    REST events, REST settlements) and forwards them to the n8n orchestration
+    layer. Part of the LSports Interview Project sports data automation
+    platform. Request/response schemas mirror the canonical Pydantic models in
+    packages/canonical-types/python/sports_automation/types.py.
+  version: 1.0.0
+  contact:
+    name: Platform Engineering
+    email: team@sports-automation.local
+servers:
+  - url: http://localhost:8000
+    description: Local development
+  - url: http://ingestion-service:8000
+    description: Docker Compose service
+tags:
+  - name: health
+    description: Service health checks
+  - name: metrics
+    description: Prometheus metrics
+  - name: ingestion
+    description: Manual event/odds/settlement ingestion
+paths:
+  /health:
+    get:
+      tags: [health]
+      summary: Health check
+      description: |
+        Reports whether each sub-service (WebSocket client, REST poller,
+        Redis/deduplicator) is connected/running. Used by Alertmanager and
+        load balancers to determine service readiness.
+      operationId: getHealth
+      responses:
+        '200':
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+        '503':
+          description: Service degraded (one or more sub-services disconnected)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+  /metrics:
+    get:
+      tags: [metrics]
+      summary: Prometheus metrics
+      description: |
+        Returns Prometheus-formatted text metrics (scraped by Prometheus).
+        Counters, histograms, and gauges for HTTP requests, ingestion
+        throughput, processing latency, provider latency, queue depth, and
+        n8n webhook calls.
+      operationId: getMetrics
+      responses:
+        '200':
+          description: Prometheus metrics payload
+          content:
+            text/plain:
+              schema:
+                type: string
+  /ingest/event:
+    post:
+      tags: [ingestion]
+      summary: Ingest an event
+      description: |
+        Manually ingest a sports event. Runs validate -> transform ->
+        deduplicate -> forward to n8n. Used for demos and testing.
+      operationId: ingestEvent
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/IngestRequest'
+            example:
+              id: evt_000001
+              sport: football
+              league: Premier League
+              status: scheduled
+      responses:
+        '200':
+          description: Ingestion accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IngestResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /ingest/odds:
+    post:
+      tags: [ingestion]
+      summary: Ingest odds
+      description: |
+        Manually ingest an odds quote. Runs validate -> transform ->
+        deduplicate -> forward to n8n. Used for demos and testing.
+      operationId: ingestOdds
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/IngestRequest'
+            example:
+              provider_id: provider_0
+              event_id: evt_000001
+              market_id: match_winner
+              selection_id: home
+              odds: 2.1
+              format: decimal
+      responses:
+        '200':
+          description: Ingestion accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IngestResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /ingest/settlement:
+    post:
+      tags: [ingestion]
+      summary: Ingest settlement
+      description: |
+        Manually ingest a settlement result. Runs validate -> transform ->
+        deduplicate -> forward to n8n. Used for demos and testing.
+      operationId: ingestSettlement
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/IngestRequest'
+            example:
+              event_id: evt_000001
+              market_id: match_winner
+              selection_id: home
+              outcome: won
+              source: official
+              confidence: 1.0
+      responses:
+        '200':
+          description: Ingestion accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IngestResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+components:
+  schemas:
+    # --- Canonical types (mirror packages/canonical-types/python/sports_automation/types.py) ---
+    Team:
+      type: object
+      required:
+        - id
+        - name
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        short_name:
+          type: string
+      example:
+        id: team_1_home
+        name: Red United
+        short_name: RED
+    PeriodScore:
+      type: object
+      required:
+        - period
+        - home
+        - away
+      properties:
+        period:
+          type: string
+        home:
+          type: integer
+        away:
+          type: integer
+      example:
+        period: Q1
+        home: 3
+        away: 7
+    Score:
+      type: object
+      required:
+        - home
+        - away
+      properties:
+        home:
+          type: integer
+        away:
+          type: integer
+        period_scores:
+          type: array
+          items:
+            $ref: '#/components/schemas/PeriodScore'
+      example:
+        home: 2
+        away: 1
+    OddsFormat:
+      type: string
+      enum:
+        - decimal
+        - american
+        - fractional
+    CanonicalOdds:
+      type: object
+      required:
+        - provider_id
+        - event_id
+        - market_id
+        - selection_id
+        - odds
+        - format
+        - timestamp
+        - sequence
+      properties:
+        provider_id:
+          type: string
+        event_id:
+          type: string
+        market_id:
+          type: string
+        selection_id:
+          type: string
+        odds:
+          type: number
+        format:
+          $ref: '#/components/schemas/OddsFormat'
+        timestamp:
+          type: string
+          format: date-time
+        sequence:
+          type: integer
+      example:
+        provider_id: provider_0
+        event_id: evt_000001
+        market_id: match_winner
+        selection_id: home
+        odds: 2.1
+        format: decimal
+        timestamp: '2026-11-09T14:30:00Z'
+        sequence: 42
+    SettlementOutcome:
+      type: string
+      enum:
+        - won
+        - lost
+        - void
+        - half_won
+        - half_lost
+    SettlementResult:
+      type: object
+      required:
+        - event_id
+        - market_id
+        - selection_id
+        - outcome
+        - settled_at
+        - source
+      properties:
+        event_id:
+          type: string
+        market_id:
+          type: string
+        selection_id:
+          type: string
+        outcome:
+          $ref: '#/components/schemas/SettlementOutcome'
+        settled_at:
+          type: string
+          format: date-time
+        source:
+          type: string
+          description: 'official | manual | auto_reconciled'
+        confidence:
+          type: number
+          minimum: 0
+          maximum: 1
+      example:
+        event_id: evt_000001
+        market_id: match_winner
+        selection_id: home
+        outcome: won
+        settled_at: '2026-11-10T17:05:00Z'
+        source: official
+        confidence: 1.0
+    AlertSeverity:
+      type: string
+      enum:
+        - info
+        - warning
+        - critical
+        - page
+    AlertType:
+      type: string
+      enum:
+        - odds_anomaly
+        - settlement_discrepancy
+        - feed_outage
+        - arbitrage_detected
+        - suspicious_pattern
+        - reconciliation_drift
+    Alert:
+      type: object
+      required:
+        - id
+        - type
+        - severity
+        - title
+        - description
+        - confidence
+        - created_at
+      properties:
+        id:
+          type: string
+        type:
+          $ref: '#/components/schemas/AlertType'
+        severity:
+          $ref: '#/components/schemas/AlertSeverity'
+        title:
+          type: string
+        description:
+          type: string
+        source_event_id:
+          type: string
+        confidence:
+          type: number
+          minimum: 0
+          maximum: 1
+        metadata:
+          type: object
+        created_at:
+          type: string
+          format: date-time
+        acknowledged_at:
+          type: string
+          format: date-time
+        resolved_at:
+          type: string
+          format: date-time
+    Discrepancy:
+      type: object
+      required:
+        - entity_type
+        - entity_id
+        - field
+        - expected
+        - actual
+        - severity
+      properties:
+        entity_type:
+          type: string
+          description: event | odds | settlement
+        entity_id:
+          type: string
+        field:
+          type: string
+        expected: {}
+        actual: {}
+        severity:
+          type: string
+          description: low | medium | high
+    ReconciliationReport:
+      type: object
+      required:
+        - date
+        - total_events
+        - matched
+        - discrepancies
+        - auto_corrected
+        - manual_review_required
+      properties:
+        date:
+          type: string
+        total_events:
+          type: integer
+        matched:
+          type: integer
+        discrepancies:
+          type: array
+          items:
+            $ref: '#/components/schemas/Discrepancy'
+        auto_corrected:
+          type: integer
+        manual_review_required:
+          type: integer
+    # --- Ingestion request/response wrappers ---
+    IngestRequest:
+      type: object
+      description: Raw provider data to ingest (event, odds, or settlement).
+      example:
+        event_id: evt_000001
+        sport: football
+        league: Premier League
+    IngestResult:
+      type: object
+      required:
+        - status
+      properties:
+        status:
+          type: string
+          enum:
+            - processed
+            - rejected
+            - duplicate
+        event_id:
+          type: string
+        reason:
+          type: string
+        errors:
+          type: array
+          items:
+            type: string
+    IngestResponse:
+      type: object
+      required:
+        - status
+        - result
+      properties:
+        status:
+          type: string
+          enum:
+            - accepted
+        result:
+          $ref: '#/components/schemas/IngestResult'
+    ErrorResponse:
+      type: object
+      required:
+        - error
+      properties:
+        error:
+          type: string
+    HealthResponse:
+      type: object
+      required:
+        - status
+        - services
+      properties:
+        status:
+          type: string
+        services:
+          type: object
+          properties:
+            websocket:
+              type: boolean
+            rest_poller:
+              type: boolean
+            redis:
+              type: boolean
+  responses:
+    BadRequest:
+      description: Validation failed
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    InternalServerError:
+      description: Internal server error
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
