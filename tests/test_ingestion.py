@@ -309,13 +309,15 @@ def wired_main(monkeypatch, fake_deduplicator, forward_spy, tmp_path):
     transform/dedup/forward path with provider-format input.
     """
     import ingestion.main as main
+    from ingestion.n8n_forwarder import N8nForwarder
 
     validator = SchemaValidator(str(tmp_path / "schemas"))
     asyncio.run(validator.load_schemas())
     main.schema_validator = validator
     main.canonical_transformer = CanonicalTransformer()
     main.deduplicator = fake_deduplicator
-    monkeypatch.setattr(main, "forward_to_n8n", forward_spy)
+    main.n8n_forwarder = N8nForwarder(dlq_redis=None)
+    monkeypatch.setattr(main.n8n_forwarder, "forward_to_n8n", forward_spy)
     return main, forward_spy
 
 

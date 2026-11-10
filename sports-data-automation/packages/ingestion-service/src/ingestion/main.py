@@ -14,25 +14,26 @@ Where it sits in the flow:
     lifespan() constructs and starts SchemaValidator, CanonicalTransformer, Deduplicator,
     WebSocketClient, and RESTPoller; HTTP endpoints /ingest/{event,odds,settlement} allow
     manual injection; process_* functions run validate → transform → deduplicate → forward.
+    n8n forwarding (retry + dead-letter queue + trace ID propagation) is delegated to
+    ingestion.n8n_forwarder.N8nForwarder.
 
 What calls it / what it calls:
     Called by: uvicorn (docker-compose / CMD); tests (import app).
     Calls: ingestion.config.get_settings; providers.websocket_client.WebSocketClient;
     providers.rest_poller.RESTPoller; normalization.schema_validator.SchemaValidator;
     normalization.canonical_transformer.CanonicalTransformer; idempotency.deduplicator.Deduplicator;
-    ingestion.metrics (setup_metrics, metrics_middleware); n8n webhook via httpx.
+    ingestion.metrics (setup_metrics, metrics_middleware); ingestion.n8n_forwarder (n8n webhook
+    forwarding with retry + DLQ).
 What breaks if removed:
     The entire ingestion service — no validation, normalization, dedup, or forwarding to n8n.
     This is the single entry point; nothing else substitutes for it.
 Language conventions:
     Python 3.11+. FastAPI with lifespan context manager, async/await throughout, httpx for
-    outbound webhooks, logging via stdlib. Prometheus metrics exposed at /metrics.
-GAP: forward_to_n8n swallows exceptions ("In production, send to dead letter queue") — a
-    n8n outage silently drops data. See 07_issues_found.md. Also, metrics.py's metrics_middleware
-    uses await in a non-async function (syntax error) — see 07_issues_found.md.
+    outbound webhooks (via n8n_forwarder), logging via stdlib. Prometheus metrics exposed at
+    /metrics.
+GAP: metrics.py's metrics_middleware uses await in a non-async function (syntax error) — see
+    07_issues_found.md.
 """
-import asyncio
-import json
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -43,11 +44,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.security import APIKeyHeader
 import redis.asyncio as redis
-from redis.asyncio import Redis
 import uvicorn
-import httpx
 
 from ingestion.config import get_settings
+from ingestion.n8n_forwarder import N8nForwarder
 from ingestion.providers.registry import ProviderRegistry
 from ingestion.providers.websocket_client import WebSocketClient
 from ingestion.providers.rest_poller import RESTPoller
@@ -70,7 +70,7 @@ rest_poller: RESTPoller | None = None
 schema_validator: SchemaValidator | None = None
 canonical_transformer: CanonicalTransformer | None = None
 deduplicator: Deduplicator | None = None
-dlq_redis: Optional[Redis] = None
+n8n_forwarder: Optional[N8nForwarder] = None
 
 # API key header for /ingest/* authentication
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
@@ -113,7 +113,7 @@ async def lifespan(app: FastAPI):
     # INTERVIEW: lifespan is the modern FastAPI replacement for @app.on_event("startup") /
     #    ("shutdown"); it guarantees setup/teardown pairing.
     """
-    global websocket_client, rest_poller, schema_validator, canonical_transformer, deduplicator, dlq_redis
+    global websocket_client, rest_poller, schema_validator, canonical_transformer, deduplicator, n8n_forwarder
 
     settings = get_settings()
 
@@ -176,7 +176,7 @@ async def lifespan(app: FastAPI):
         )
         await rest_poller.start()
 
-    # DLQ Redis client (dead letter queue for failed n8n forwards — fail-open)
+    # DLQ Redis client + n8n forwarder (dead letter queue for failed n8n forwards — fail-open)
     try:
         dlq_redis = redis.from_url(
             settings.redis_url,
@@ -184,10 +184,11 @@ async def lifespan(app: FastAPI):
             decode_responses=True,
         )
         await dlq_redis.ping()
+        n8n_forwarder = N8nForwarder(dlq_redis=dlq_redis)
         logger.info(f"DLQ Redis connected: {settings.redis_url}")
     except Exception as e:
         logger.error(f"Failed to connect DLQ Redis: {e}")
-        dlq_redis = None
+        n8n_forwarder = N8nForwarder(dlq_redis=None)
 
     logger.info("Ingestion service started")
 
@@ -204,8 +205,8 @@ async def lifespan(app: FastAPI):
             await rest_poller.stop()
     if deduplicator:
         await deduplicator.disconnect()
-    if dlq_redis:
-        await dlq_redis.close()
+    if n8n_forwarder and n8n_forwarder.dlq_redis:
+        await n8n_forwarder.dlq_redis.close()
     logger.info("Ingestion service stopped")
 
 
@@ -356,7 +357,7 @@ async def process_odds(data: dict, trace_id: Optional[str] = None) -> dict:
             return {"status": "duplicate", "eventId": canonical.get('eventId'), "trace_id": trace_id}
 
     # Forward to n8n webhook
-    await forward_to_n8n("odds", canonical, trace_id)
+    await n8n_forwarder.forward_to_n8n("odds", canonical, trace_id)
 
     return {"status": "processed", "eventId": canonical.get('eventId'), "trace_id": trace_id}
 
@@ -389,7 +390,7 @@ async def process_event(data: dict, trace_id: Optional[str] = None) -> dict:
             return {"status": "duplicate", "eventId": canonical.get('id'), "trace_id": trace_id}
 
     # Forward to n8n webhook
-    await forward_to_n8n("event", canonical, trace_id)
+    await n8n_forwarder.forward_to_n8n("event", canonical, trace_id)
 
     return {"status": "processed", "eventId": canonical.get('id'), "trace_id": trace_id}
 
@@ -422,70 +423,9 @@ async def process_settlement(data: dict, trace_id: Optional[str] = None) -> dict
             return {"status": "duplicate", "eventId": canonical.get('eventId'), "trace_id": trace_id}
 
     # Forward to n8n webhook
-    await forward_to_n8n("settlement", canonical, trace_id)
+    await n8n_forwarder.forward_to_n8n("settlement", canonical, trace_id)
 
     return {"status": "processed", "eventId": canonical.get('eventId'), "trace_id": trace_id}
-
-
-async def forward_to_n8n(data_type: str, data: dict, trace_id: Optional[str] = None):
-    """POST the canonical payload to the n8n webhook for this data type.
-
-    WHAT: httpx.AsyncClient POST to {n8n_webhook_url}/{data_type} with a 10s timeout, retried
-        with exponential backoff up to n8n_max_retries attempts. Injects X-Trace-ID header
-        from trace_id for distributed tracing. On total failure, writes the payload to the
-        dead-letter queue (Redis list dlq:n8n:{data_type}) instead of silently dropping data.
-    WHY: n8n is the orchestration layer — once data is validated/normalized/deduped here, it's
-        handed to n8n for event routing, odds normalization, settlement, and alerting. A n8n
-        outage must not lose data, and every forwarded request carries the trace ID so
-        n8n and processing-engine can continue the distributed trace.
-    INPUTS: data_type ("odds"|"event"|"settlement"), data (canonical dict),
-        trace_id (optional distributed trace ID).
-    OUTPUTS: None.
-    SIDE EFFECTS: makes outbound HTTP request(s) to n8n; may write to Redis DLQ.
-    FAILURE MODES: if all retries fail and the DLQ Redis client is unavailable, the error is
-        logged and the data is dropped (fail-open, same pattern as the Deduplicator).
-    """
-    settings = get_settings()
-
-    headers = {"Content-Type": "application/json"}
-    headers.update(trace_id_header(trace_id))
-
-    last_error = None
-    for attempt in range(settings.n8n_max_retries):
-        try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                await client.post(
-                    f"{settings.n8n_webhook_url}/{data_type}",
-                    json=data,
-                    headers=headers,
-                )
-            return  # success
-        except Exception as e:
-            last_error = e
-            if attempt < settings.n8n_max_retries - 1:
-                await asyncio.sleep(settings.n8n_retry_backoff * (2 ** attempt))
-
-    # All retries exhausted — dead letter queue
-    await _write_to_dlq(data_type, data, last_error)
-
-
-async def _write_to_dlq(data_type: str, data: dict, error: Exception):
-    """Write a failed forward to the DLQ Redis list (fail-open: log if unavailable)."""
-    settings = get_settings()
-    if dlq_redis is None:
-        logger.error(f"DLQ unavailable, dropping {data_type}: {error}")
-        return
-    try:
-        key = f"{settings.dlq_redis_key_prefix}{data_type}"
-        payload = json.dumps(
-            {"data": data, "error": str(error), "data_type": data_type}
-        )
-        await dlq_redis.rpush(key, payload)
-        logger.warning(
-            f"Wrote {data_type} to DLQ {key} after retries exhausted: {error}"
-        )
-    except Exception as e:
-        logger.error(f"Failed to write to DLQ for {data_type}: {e}")
 
 
 @app.post("/dlq/retry")
@@ -501,29 +441,7 @@ async def retry_dlq(data_type: str):
     SIDE EFFECTS: pops from Redis DLQ, re-forwards to n8n, may re-push on failure.
     FAILURE MODES: DLQ unavailable -> 503.
     """
-    settings = get_settings()
-    if dlq_redis is None:
-        raise HTTPException(status_code=503, detail="DLQ unavailable")
-    key = f"{settings.dlq_redis_key_prefix}{data_type}"
-    reprocessed = 0
-    max_items = 100
-    while reprocessed < max_items:
-        raw = await dlq_redis.lpop(key)
-        if raw is None:
-            break
-        try:
-            payload = json.loads(raw)
-            item_data = payload.get("data", payload) if isinstance(payload, dict) else raw
-            await forward_to_n8n(
-                data_type, item_data, item_data.get("trace_id") if isinstance(item_data, dict) else None
-            )
-            reprocessed += 1
-        except Exception as e:
-            # Put it back and stop — don't loop forever on a poison message
-            await dlq_redis.rpush(key, raw)
-            logger.error(f"DLQ retry failed for {data_type}: {e}")
-            break
-    return {"status": "ok", "reprocessed": reprocessed, "data_type": data_type}
+    return await n8n_forwarder.retry_dlq(data_type)
 
 
 if __name__ == "__main__":
