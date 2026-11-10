@@ -138,6 +138,30 @@ class Settings(BaseSettings):
     # Metrics
     metrics_port: int = Field(default=9090, alias="METRICS_PORT")
 
+    # Rate limiting (token bucket) for /ingest/* and /dlq/* write endpoints.
+    # Authenticated clients (present X-API-Key) get a higher bucket than anonymous clients.
+    rate_limit_enabled: bool = Field(default=True, alias="RATE_LIMIT_ENABLED")
+    rate_limit_requests_per_minute: int = Field(
+        default=60, alias="RATE_LIMIT_REQUESTS_PER_MINUTE"
+    )
+    rate_limit_burst: int = Field(default=10, alias="RATE_LIMIT_BURST")
+    rate_limit_anonymous_per_minute: int = Field(
+        default=20, alias="RATE_LIMIT_ANONYMOUS_PER_MINUTE"
+    )
+    rate_limit_anonymous_burst: int = Field(default=5, alias="RATE_LIMIT_ANONYMOUS_BURST")
+
+    # Security response headers (applied to every response).
+    security_headers_enabled: bool = Field(default=True, alias="SECURITY_HEADERS_ENABLED")
+    hsts_enabled: bool = Field(
+        default=False, alias="HSTS_ENABLED"
+    )  # enable only when served over HTTPS in production
+    hsts_max_age: int = Field(default=31536000, alias="HSTS_MAX_AGE")
+
+    # Request limits
+    max_request_body_size: int = Field(
+        default=1048576, alias="MAX_REQUEST_BODY_SIZE"
+    )  # 1 MiB
+
     @model_validator(mode="after")
     def _validate_no_dev_defaults_in_production(self) -> "Settings":
         """Fail fast at startup when dev-default secrets leak into non-dev environments.

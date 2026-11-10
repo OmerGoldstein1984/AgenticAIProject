@@ -1,0 +1,102 @@
+# .github/workflows/security.yml
+# ================================
+# Security scanning gate: dependency vulnerability scanning (pip-audit, npm audit)
+# and static application security testing (bandit) run on every push/PR so
+# vulnerable dependencies and insecure code patterns are caught before main.
+#
+# WHY: The platform ingests sports data over HTTP/WebSocket and exposes
+# write-heavy /ingest/* endpoints. Dependency vulnerabilities or SAST issues in
+# the ingestion/processing services are directly exploitable, so they must be
+# blocked in CI, not discovered in production.
+#
+# This is a hard gate: any finding fails the build. Resolve findings or add an
+# explicitly-reviewed baseline before merging.
+#
+# Language conventions: GitHub Actions YAML. Jobs run on ubuntu-latest.
+
+name: Security Scanning
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+jobs:
+  python-deps:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install pip-audit
+        run: python -m pip install --upgrade pip pip-audit
+
+      - name: Audit ingestion-service dependencies (fails on any vulnerability)
+        working-directory: packages/ingestion-service
+        run: pip-audit --exit-code --desc on --format column
+
+      - name: Audit processing-engine dependencies (fails on any vulnerability)
+        working-directory: packages/processing-engine
+        run: pip-audit --exit-code --desc on --format column
+
+      - name: Audit mock-providers dependencies (fails on any vulnerability)
+        working-directory: packages/mock-providers
+        run: pip-audit --exit-code --desc on --format column
+
+  node-deps:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: packages/n8n-nodes/package-lock.json
+
+      - name: Audit n8n-nodes dependencies (fails on high/critical vulnerabilities)
+        working-directory: packages/n8n-nodes
+        run: |
+          npm ci --ignore-scripts
+          npm audit --audit-level=high
+
+  sast-python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install bandit
+        run: python -m pip install --upgrade bandit
+
+      - name: Run bandit SAST on ingestion-service (fails on any issue)
+        working-directory: packages/ingestion-service
+        run: bandit -r src -f txt -o reports/bandit-ingestion.txt -ll
+
+      - name: Run bandit SAST on processing-engine (fails on any issue)
+        working-directory: packages/processing-engine
+        run: bandit -r src -f txt -o reports/bandit-processing.txt -ll
+
+      - name: Run bandit SAST on mock-providers (fails on any issue)
+        working-directory: packages/mock-providers
+        run: bandit -r src -f txt -o reports/bandit-mock.txt -ll
+
+      - name: Upload SAST reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-reports
+          path: |
+            packages/*/reports/*.txt
+          retention-days: 30
