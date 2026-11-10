@@ -61,14 +61,15 @@ from sports_automation.types import (  # noqa: E402
 )
 
 
-def _simulate_alert(request: LLMAlertRequest) -> LLMAlertResponse:
+def _simulate_alert(request: LLMAlertRequest, trace_id: Optional[str] = None) -> LLMAlertResponse:
     """Produce a deterministic LLM-style alert response when no API key is configured.
 
     WHAT: Builds an LLMAlertResponse from the request's anomaly_type and context using
         rule-based templates, with a confidence score derived from context signal strength.
+        trace_id is carried into metadata for distributed tracing.
     WHY: Lets the stack run end-to-end in dev/demo/CI without an Anthropic API key, while
         still exercising the structured alert schema downstream.
-    INPUTS: request (LLMAlertRequest).
+    INPUTS: request (LLMAlertRequest), trace_id (optional distributed trace ID).
     OUTPUTS: LLMAlertResponse.
     SIDE EFFECTS: none.
     """
@@ -159,19 +160,21 @@ def _simulate_alert(request: LLMAlertRequest) -> LLMAlertResponse:
             "simulated": True,
             "source_event_id": getattr(event_data, "event_id", None)
             or getattr(event_data, "id", None),
+            "trace_id": trace_id,
         },
     )
 
 
-def _call_anthropic(request: LLMAlertRequest) -> LLMAlertResponse:
+def _call_anthropic(request: LLMAlertRequest, trace_id: Optional[str] = None) -> LLMAlertResponse:
     """Call the Anthropic Messages API for a structured alert response.
 
     WHAT: Builds system + user prompts via prompt_templates, calls the Anthropic Messages
         API with a JSON schema (structured output), parses the result into an
-        LLMAlertResponse, and falls back to simulation on any failure.
+        LLMAlertResponse, and falls back to simulation on any failure. trace_id is carried
+        into metadata for distributed tracing.
     WHY: Production alerts come from a real LLM with few-shot prompting; structured output
         keeps downstream routing deterministic.
-    INPUTS: request (LLMAlertRequest).
+    INPUTS: request (LLMAlertRequest), trace_id (optional distributed trace ID).
     OUTPUTS: LLMAlertResponse.
     SIDE EFFECTS: makes an outbound HTTPS call to api.anthropic.com.
     FAILURE MODES: network error, missing key, malformed JSON → caught and falls back to
@@ -181,11 +184,11 @@ def _call_anthropic(request: LLMAlertRequest) -> LLMAlertResponse:
         import anthropic  # type: ignore
     except ImportError:  # pragma: no cover - anthropic not installed
         logger.warning("anthropic SDK not installed; simulating alert")
-        return _simulate_alert(request)
+        return _simulate_alert(request, trace_id)
 
     api_key = os.getenv("ANTHROPIC_API_KEY")
     if not api_key:
-        return _simulate_alert(request)
+        return _simulate_alert(request, trace_id)
 
     try:
         client = anthropic.Anthropic(api_key=api_key)
@@ -244,11 +247,11 @@ def _call_anthropic(request: LLMAlertRequest) -> LLMAlertResponse:
             severity=_coerce_severity(parsed.get("severity", "info")),
             confidence=max(0.0, min(1.0, float(parsed.get("confidence", 0.5)))),
             suggested_action=parsed.get("suggested_action"),
-            metadata={**parsed.get("metadata", {}), "simulated": False},
+            metadata={**parsed.get("metadata", {}), "simulated": False, "trace_id": trace_id},
         )
     except Exception as exc:  # pragma: no cover - defensive fallback
         logger.warning(f"Anthropic call failed, simulating alert: {exc}")
-        return _simulate_alert(request)
+        return _simulate_alert(request, trace_id)
 
 
 def _parse_llm_json(text: str) -> Dict[str, Any]:
@@ -282,29 +285,31 @@ class LLMClient:
     """Client wrapper for generating structured LLM alerts.
 
     WHAT: Wraps generate_alert so callers can hold a client instance (e.g. injected into an
-        n8n node or service) and call generate_alert(request) -> LLMAlertResponse.
+        n8n node or service) and call generate_alert(request, trace_id) -> LLMAlertResponse.
     WHY: Dependency-injection friendly surface; easy to mock in tests.
     """
 
-    def generate_alert(self, request: LLMAlertRequest) -> LLMAlertResponse:
+    def generate_alert(self, request: LLMAlertRequest, trace_id: Optional[str] = None) -> LLMAlertResponse:
         """Generate one structured alert from an LLMAlertRequest."""
-        return generate_alert(request)
+        return generate_alert(request, trace_id)
 
 
-def generate_alert(request: LLMAlertRequest) -> LLMAlertResponse:
+def generate_alert(request: LLMAlertRequest, trace_id: Optional[str] = None) -> LLMAlertResponse:
     """Generate one structured alert from an LLMAlertRequest.
 
     WHAT: If ANTHROPIC_API_KEY is set, calls the Anthropic Messages API; otherwise simulates
         a deterministic alert. Returns an LLMAlertResponse with title, description, severity,
-        confidence, and optional suggested_action/metadata.
+        confidence, and optional suggested_action/metadata. trace_id is carried into metadata
+        for distributed tracing across ingestion -> n8n -> processing-engine.
     WHY: Centralized entry point for alert generation; simulation keeps the stack runnable
         without a live Anthropic contract.
-    INPUTS: request (LLMAlertRequest with event_data, anomaly_type, context, few_shot_examples).
+    INPUTS: request (LLMAlertRequest with event_data, anomaly_type, context, few_shot_examples),
+        trace_id (optional distributed trace ID).
     OUTPUTS: LLMAlertResponse.
     SIDE EFFECTS: may make an outbound HTTPS call to api.anthropic.com.
     FAILURE MODES: any failure falls back to _simulate_alert (alert is never dropped).
     """
     api_key = os.getenv("ANTHROPIC_API_KEY")
     if api_key:
-        return _call_anthropic(request)
-    return _simulate_alert(request)
+        return _call_anthropic(request, trace_id)
+    return _simulate_alert(request, trace_id)

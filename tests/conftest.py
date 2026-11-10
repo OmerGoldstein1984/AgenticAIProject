@@ -193,8 +193,8 @@ class ForwardSpy:
     def __init__(self):
         self.calls = []
 
-    async def __call__(self, data_type: str, data: dict):
-        self.calls.append((data_type, data))
+    async def __call__(self, data_type: str, data: dict, trace_id: Optional[str] = None):
+        self.calls.append((data_type, data, trace_id))
 
 
 @pytest.fixture

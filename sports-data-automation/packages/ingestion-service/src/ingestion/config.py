@@ -30,7 +30,7 @@ GAP: No validation that required secrets (e.g. POSTGRES_PASSWORD) are actually s
     like "changeme" would silently reach production if .env is missing. See 07_issues_found.md.
 """
 from pydantic_settings import BaseSettings
-from pydantic import Field
+from pydantic import Field, model_validator
 from typing import List, Dict, Optional
 import os
 
@@ -101,6 +101,14 @@ class Settings(BaseSettings):
     rest_poll_interval: int = Field(default=30, alias="REST_POLL_INTERVAL")
     ws_reconnect_interval: int = Field(default=5, alias="WS_RECONNECT_INTERVAL")
 
+    # Provider registry
+    providers_config_path: str = Field(
+        default="./providers.json", alias="PROVIDERS_CONFIG_PATH"
+    )
+    provider_registry_enabled: bool = Field(
+        default=False, alias="PROVIDER_REGISTRY_ENABLED"
+    )
+
     # Schema registry
     schema_registry_path: str = Field(
         default="./schemas",
@@ -113,8 +121,53 @@ class Settings(BaseSettings):
         alias="DEDUPLICATION_TTL_SECONDS"
     )
 
+    # n8n retry / dead letter queue
+    n8n_max_retries: int = Field(default=3, alias="N8N_MAX_RETRIES")
+    n8n_retry_backoff: float = Field(default=1.0, alias="N8N_RETRY_BACKOFF")
+    dlq_redis_key_prefix: str = Field(default="dlq:n8n:", alias="DLQ_REDIS_KEY_PREFIX")
+
+    # Ingestion API key auth (X-API-Key on /ingest/* endpoints)
+    ingestion_api_key: str = Field(default="", alias="INGESTION_API_KEY")
+
+    # CORS
+    cors_allow_origins: List[str] = Field(
+        default=["http://localhost:3000", "http://localhost:5678"],
+        alias="CORS_ALLOW_ORIGINS",
+    )
+
     # Metrics
     metrics_port: int = Field(default=9090, alias="METRICS_PORT")
+
+    @model_validator(mode="after")
+    def _validate_no_dev_defaults_in_production(self) -> "Settings":
+        """Fail fast at startup when dev-default secrets leak into non-dev environments.
+
+        WHAT: When DEBUG is falsy (production/staging), rejects Settings whose postgres_dsn
+            still contains the dev placeholder "changeme". Prevents dev credentials from
+            silently reaching production, where they would either fail to connect or expose
+            a well-known default password.
+        WHY: The documented GAP in config.py (header lines 29–30) is that required secrets
+            have dev-friendly defaults that can silently reach production if .env is missing.
+            This validator makes misconfiguration fail fast at startup instead of silently
+            at runtime.
+        INPUTS: none (reads self fields).
+        OUTPUTS: the validated Settings instance.
+        SIDE EFFECTS: raises ValueError on a dev-default value in a non-dev environment.
+        """
+        if self.debug:
+            return self
+        dev_defaults = {
+            "postgres_dsn": "changeme",
+        }
+        for field, placeholder in dev_defaults.items():
+            value = getattr(self, field, None)
+            if isinstance(value, str) and placeholder in value:
+                raise ValueError(
+                    f"{field} contains dev default '{placeholder}'; "
+                    f"set a production value via {field.upper()} env var before deploying "
+                    f"to non-dev (DEBUG=0)"
+                )
+        return self
 
     class Config:
         env_file = ".env"

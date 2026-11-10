@@ -25,10 +25,11 @@ What breaks if removed:
 Language conventions:
     Python 3.11+. prometheus_client with a custom CollectorRegistry (so this service's metrics
     don't collide with others). Histogram buckets tuned for sub-second to seconds latency.
-BUG (pre-existing, NOT fixed): metrics_middleware() is declared `def` (not `async def`) but uses
-    `await call_next(request)` — a SyntaxError ("await outside async function") that prevents the
-    module from being imported, and therefore breaks the whole ingestion service. Recorded in
-    07_issues_found.md; left as-is per the no-code-change rule.
+BUG (pre-existing, fixed): metrics_middleware() was previously declared `def` (not `async def`)
+    but used `await call_next(request)` — a SyntaxError ("await outside async function") that
+    prevented the module from being imported and broke the whole ingestion service. The function
+    is now declared `async def` (line 160), so `await call_next(request)` is valid and the module
+    imports cleanly.
 """
 from prometheus_client import Counter, Histogram, Gauge, Summary, CollectorRegistry, generate_latest
 from fastapi import Request, Response

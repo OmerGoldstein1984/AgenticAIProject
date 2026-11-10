@@ -30,7 +30,7 @@ Language conventions:
 import sys
 import os
 from datetime import datetime
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 # Ensure canonical types are importable (monorepo layout).
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -50,16 +50,19 @@ def build_report(
     discrepancies: List[Discrepancy],
     auto_corrected: int,
     manual_review_required: int,
+    trace_id: Optional[str] = None,
 ) -> ReconciliationReport:
     """Build a ReconciliationReport for one date.
 
     WHAT: Constructs a ReconciliationReport with the provided counts and discrepancy list,
         validating that counts are non-negative and that auto_corrected + manual_review
-        <= len(discrepancies) + matched (sanity).
+        <= len(discrepancies) + matched (sanity). trace_id is carried into the report for
+        distributed tracing.
     WHY: A single, validated report is the reconciliation job's output; dashboards and alerts
-        read it to surface drift to ops.
+        read it to surface drift to ops. trace_id correlates the reconciliation run with the
+        ingestion->n8n->processing-engine trace.
     INPUTS: date (ISO date string), total_events, matched, discrepancies,
-        auto_corrected, manual_review_required.
+        auto_corrected, manual_review_required, trace_id (optional str).
     OUTPUTS: ReconciliationReport.
     SIDE EFFECTS: none.
     FAILURE MODES: raises ValueError on negative counts or inconsistent totals.
@@ -82,6 +85,7 @@ def build_report(
         discrepancies=list(discrepancies),
         auto_corrected=auto_corrected,
         manual_review_required=manual_review_required,
+        trace_id=trace_id,
     )
 
 

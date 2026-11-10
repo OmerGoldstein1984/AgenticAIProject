@@ -119,14 +119,15 @@ class SettlementRuleEngine:
     """Evaluates a SettlementRuleSet against an event + odds, returning a SettlementResult.
 
     WHAT: Holds a parsed rule set (version, rules sorted by priority, default_outcome).
-        evaluate(event, odds) runs each rule's condition tree against the event+odds context
-        in priority order; the first matching rule's outcome is used. If none match,
+        evaluate(event, odds, trace_id) runs each rule's condition tree against the event+odds
+        context in priority order; the first matching rule's outcome is used. If none match,
         default_outcome is used (safe default: void).
     WHY: Settlement accuracy is a regulatory requirement. Priority-ordered first-match rules
         with a void default guarantee deterministic, auditable outcomes and never pay on an
         unrecognized match.
-    INPUTS: rule_set (dict from parse_rule_set), event (CanonicalEvent), odds (CanonicalOdds).
-    OUTPUTS: SettlementResult with outcome, settled_at, source="auto", confidence.
+    INPUTS: rule_set (dict from parse_rule_set), event (CanonicalEvent), odds (CanonicalOdds),
+        trace_id (optional distributed trace ID for end-to-end propagation).
+    OUTPUTS: SettlementResult with outcome, settled_at, source="auto", confidence, trace_id.
     SIDE EFFECTS: none (pure evaluation).
     FAILURE MODES: a rule condition that raises during evaluation is caught, logged, and the
         rule is skipped (so one bad rule cannot block all settlements); falls back to
@@ -155,16 +156,20 @@ class SettlementRuleEngine:
         self,
         event: CanonicalEvent,
         odds: Optional[CanonicalOdds] = None,
+        trace_id: Optional[str] = None,
     ) -> SettlementResult:
         """Evaluate the rule set against an event + odds and return a SettlementResult.
 
         WHAT: Builds the DSL context, iterates rules in priority order, evaluates each
             condition tree; returns the first matching rule's outcome. If no rule matches,
             returns default_outcome. settled_at is now, source is "auto", confidence is
-            1.0 for rule-matched outcomes and 0.5 for default outcomes.
+            1.0 for rule-matched outcomes and 0.5 for default outcomes. trace_id is carried
+            into the SettlementResult for distributed tracing.
         WHY: Produces one auditable SettlementResult per selection, with outcome/source/
-            confidence forming the regulatory audit trail.
-        INPUTS: event (CanonicalEvent), odds (CanonicalOdds, optional).
+            confidence forming the regulatory audit trail, plus trace_id for correlation
+            across ingestion -> n8n -> processing-engine.
+        INPUTS: event (CanonicalEvent), odds (CanonicalOdds, optional),
+            trace_id (optional str).
         OUTPUTS: SettlementResult.
         SIDE EFFECTS: none.
         FAILURE MODES: condition evaluation errors skip the offending rule; final fallback is
@@ -207,6 +212,7 @@ class SettlementRuleEngine:
             settled_at=datetime.utcnow(),
             source="auto",
             confidence=confidence,
+            trace_id=trace_id,
         )
 
 

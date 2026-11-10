@@ -297,7 +297,7 @@ export class LLMAlertGenerator implements INodeType {
       const userPrompt = this.buildUserPrompt(anomalyType, eventData, anomalyDetails);
 
       try {
-        // Call LLM
+        // Call LLM (real Anthropic/OpenAI SDK when API key configured, simulated otherwise)
         const llmResponse = await this.callLLM(
           provider,
           model,
@@ -306,7 +306,8 @@ export class LLMAlertGenerator implements INodeType {
           userPrompt,
           outputSchema,
           temperature,
-          maxTokens
+          maxTokens,
+          anomalyType
         );
 
         // Parse structured response
@@ -455,40 +456,43 @@ ${JSON.stringify(anomalyDetails, null, 2)}`;
     userPrompt: string,
     outputSchema: any,
     temperature: number,
-    maxTokens: number
+    maxTokens: number,
+    anomalyType: string
   ): Promise<string> {
-    // In real implementation, use Anthropic SDK or OpenAI SDK
-    // This is a placeholder that simulates the call
-    // For production, install @anthropic-ai/sdk or openai package
-
     if (provider === 'anthropic') {
-      // const anthropic = new Anthropic({ apiKey });
-      // const response = await anthropic.messages.create({
-      //   model,
-      //   max_tokens: maxTokens,
-      //   temperature,
-      //   system: systemPrompt,
-      //   messages: [{ role: 'user', content: userPrompt }],
-      // });
-      // return response.content[0].text;
-
-      // Simulated response for development
-      return this.getSimulatedResponse(anomalyType);
+      try {
+        const { Anthropic } = await import('@anthropic-ai/sdk');
+        const anthropic = new Anthropic({ apiKey });
+        const response = await anthropic.messages.create({
+          model,
+          max_tokens: maxTokens,
+          temperature,
+          system: systemPrompt,
+          messages: [{ role: 'user', content: userPrompt }],
+        });
+        return response.content[0].text;
+      } catch {
+        // SDK not installed or call failed — fall back to simulated
+        return this.getSimulatedResponse(anomalyType);
+      }
     } else {
-      // const openai = new OpenAI({ apiKey });
-      // const response = await openai.chat.completions.create({
-      //   model,
-      //   max_tokens: maxTokens,
-      //   temperature,
-      //   messages: [
-      //     { role: 'system', content: systemPrompt },
-      //     { role: 'user', content: userPrompt },
-      //   ],
-      //   response_format: { type: 'json_object' },
-      // });
-      // return response.choices[0].message.content;
-
-      return this.getSimulatedResponse(anomalyType);
+      try {
+        const { OpenAI } = await import('openai');
+        const openai = new OpenAI({ apiKey });
+        const response = await openai.chat.completions.create({
+          model,
+          max_tokens: maxTokens,
+          temperature,
+          messages: [
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: userPrompt },
+          ],
+          response_format: { type: 'json_object' },
+        });
+        return response.choices[0].message.content || '';
+      } catch {
+        return this.getSimulatedResponse(anomalyType);
+      }
     }
   }
 

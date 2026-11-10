@@ -91,6 +91,7 @@ export interface CanonicalOdds {
   format: OddsFormat;   // Original provider format before normalization
   timestamp: string;    // ISO 8601 when the quote was produced
   sequence: number;     // Monotonic per-provider sequence for ordering/dedup
+  traceId?: string;     // Distributed trace ID for end-to-end propagation
 }
 
 /**
@@ -129,6 +130,7 @@ export interface CanonicalEvent {
   status: EventStatus;
   score?: Score;
   metadata: Record<string, unknown>;
+  traceId?: string;  // Distributed trace ID for end-to-end propagation
 }
 
 /**
@@ -201,6 +203,7 @@ export interface SettlementResult {
   settledAt: string;
   source: 'official' | 'manual' | 'auto_reconciled';
   confidence: number; // 0-1
+  traceId?: string;  // Distributed trace ID for end-to-end propagation
 }
 
 /**
@@ -232,6 +235,7 @@ export interface Alert {
   createdAt: string;
   acknowledgedAt?: string;
   resolvedAt?: string;
+  traceId?: string;  // Distributed trace ID for end-to-end propagation
 }
 
 /**
@@ -262,6 +266,7 @@ export interface ReconciliationReport {
   discrepancies: Discrepancy[];
   autoCorrected: number;
   manualReviewRequired: number;
+  traceId?: string;  // Distributed trace ID for end-to-end propagation
 }
 
 /**

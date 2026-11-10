@@ -31,21 +31,31 @@ GAP: forward_to_n8n swallows exceptions ("In production, send to dead letter que
     n8n outage silently drops data. See 07_issues_found.md. Also, metrics.py's metrics_middleware
     uses await in a non-async function (syntax error) — see 07_issues_found.md.
 """
-from contextlib import asynccontextmanager
-from fastapi import FastAPI, Request
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
-import uvicorn
+import asyncio
+import json
 import logging
 import os
+from contextlib import asynccontextmanager
+from typing import Optional
+
+from fastapi import FastAPI, Request, Depends, HTTPException, Security, status
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from fastapi.security import APIKeyHeader
+import redis.asyncio as redis
+from redis.asyncio import Redis
+import uvicorn
+import httpx
 
 from ingestion.config import get_settings
+from ingestion.providers.registry import ProviderRegistry
 from ingestion.providers.websocket_client import WebSocketClient
 from ingestion.providers.rest_poller import RESTPoller
 from ingestion.normalization.schema_validator import SchemaValidator
 from ingestion.normalization.canonical_transformer import CanonicalTransformer
 from ingestion.idempotency.deduplicator import Deduplicator
 from ingestion.metrics import setup_metrics, metrics_middleware
+from ingestion.tracing import extract_trace_id_from_headers, new_trace_context, trace_id_header
 
 # Configure logging
 logging.basicConfig(
@@ -60,6 +70,26 @@ rest_poller: RESTPoller | None = None
 schema_validator: SchemaValidator | None = None
 canonical_transformer: CanonicalTransformer | None = None
 deduplicator: Deduplicator | None = None
+dlq_redis: Optional[Redis] = None
+
+# API key header for /ingest/* authentication
+api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
+
+
+async def verify_api_key(api_key: str | None = Security(api_key_header)):
+    """Require X-API-Key on /ingest/* endpoints when ingestion_api_key is configured.
+
+    Health and metrics endpoints remain unauthenticated. If no API key is configured
+    (empty setting), the check is skipped (fail-open/dev-friendly).
+    """
+    settings = get_settings()
+    if not settings.ingestion_api_key:
+        return
+    if api_key is None or api_key != settings.ingestion_api_key:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or missing API key",
+        )
 
 
 @asynccontextmanager
@@ -83,7 +113,7 @@ async def lifespan(app: FastAPI):
     # INTERVIEW: lifespan is the modern FastAPI replacement for @app.on_event("startup") /
     #    ("shutdown"); it guarantees setup/teardown pairing.
     """
-    global websocket_client, rest_poller, schema_validator, canonical_transformer, deduplicator
+    global websocket_client, rest_poller, schema_validator, canonical_transformer, deduplicator, dlq_redis
 
     settings = get_settings()
 
@@ -104,22 +134,60 @@ async def lifespan(app: FastAPI):
     )
     await deduplicator.connect()
 
-    # WebSocket client for live odds
-    websocket_client = WebSocketClient(
-        url=settings.odds_feed_ws_url,
-        on_message=handle_odds_message,
-        reconnect_interval=settings.ws_reconnect_interval,
-    )
-    await websocket_client.connect()
+    # Provider registry (replaces hard-coded rest_endpoints / odds_feed_ws_url).
+    # Falls back to Settings.rest_endpoints if the registry is disabled or fails to load.
+    registry: ProviderRegistry | None = None
+    if settings.provider_registry_enabled:
+        try:
+            registry = ProviderRegistry(
+                config_path=settings.providers_config_path,
+                enabled=True,
+            )
+            await registry.start(
+                on_event=handle_event_message,
+                on_settlement=handle_settlement_message,
+                on_message=handle_odds_message,
+                poll_interval=settings.rest_poll_interval,
+                reconnect_interval=settings.ws_reconnect_interval,
+            )
+            websocket_clients = registry.get_websocket_clients()
+            websocket_client = websocket_clients[0] if websocket_clients else None
+            rest_pollers = registry.get_rest_pollers()
+            rest_poller = rest_pollers[0] if rest_pollers else None
+        except Exception as e:
+            logger.error(f"Provider registry failed, falling back to rest_endpoints: {e}")
+            registry = None
 
-    # REST pollers for event and settlement feeds
-    rest_poller = RESTPoller(
-        endpoints=settings.rest_endpoints,
-        poll_interval=settings.rest_poll_interval,
-        on_event=handle_event_message,
-        on_settlement=handle_settlement_message,
-    )
-    await rest_poller.start()
+    if registry is None:
+        # WebSocket client for live odds (fallback)
+        websocket_client = WebSocketClient(
+            url=settings.odds_feed_ws_url,
+            on_message=handle_odds_message,
+            reconnect_interval=settings.ws_reconnect_interval,
+        )
+        await websocket_client.connect()
+
+        # REST pollers for event and settlement feeds (fallback)
+        rest_poller = RESTPoller(
+            endpoints=settings.rest_endpoints,
+            poll_interval=settings.rest_poll_interval,
+            on_event=handle_event_message,
+            on_settlement=handle_settlement_message,
+        )
+        await rest_poller.start()
+
+    # DLQ Redis client (dead letter queue for failed n8n forwards — fail-open)
+    try:
+        dlq_redis = redis.from_url(
+            settings.redis_url,
+            encoding="utf-8",
+            decode_responses=True,
+        )
+        await dlq_redis.ping()
+        logger.info(f"DLQ Redis connected: {settings.redis_url}")
+    except Exception as e:
+        logger.error(f"Failed to connect DLQ Redis: {e}")
+        dlq_redis = None
 
     logger.info("Ingestion service started")
 
@@ -127,12 +195,17 @@ async def lifespan(app: FastAPI):
 
     # Cleanup
     logger.info("Shutting down ingestion service...")
-    if websocket_client:
-        await websocket_client.disconnect()
-    if rest_poller:
-        await rest_poller.stop()
+    if registry:
+        await registry.stop()
+    else:
+        if websocket_client:
+            await websocket_client.disconnect()
+        if rest_poller:
+            await rest_poller.stop()
     if deduplicator:
         await deduplicator.disconnect()
+    if dlq_redis:
+        await dlq_redis.close()
     logger.info("Ingestion service stopped")
 
 
@@ -143,10 +216,12 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# CORS — allow cross-origin calls (dev-friendly; tighten origins in production)
+# CORS — allowed origins from settings (tightened from ["*"]); regex covers localhost dev ports
+settings = get_settings()
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=settings.cors_allow_origins,
+    allow_origin_regex=r"http://localhost:\d+",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -180,37 +255,40 @@ async def metrics():
     return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
-@app.post("/ingest/event")
+@app.post("/ingest/event", dependencies=[Depends(verify_api_key)])
 async def ingest_event(request: Request):
     """Manual event ingestion endpoint (used for demos / testing)."""
     try:
         data = await request.json()
-        result = await process_event(data)
-        return {"status": "accepted", "result": result}
+        trace_id = extract_trace_id_from_headers(request.headers) or new_trace_context()
+        result = await process_event(data, trace_id)
+        return {"status": "accepted", "result": result, "trace_id": trace_id}
     except Exception as e:
         logger.exception("Error ingesting event")
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 
-@app.post("/ingest/odds")
+@app.post("/ingest/odds", dependencies=[Depends(verify_api_key)])
 async def ingest_odds(request: Request):
     """Manual odds ingestion endpoint."""
     try:
         data = await request.json()
-        result = await process_odds(data)
-        return {"status": "accepted", "result": result}
+        trace_id = extract_trace_id_from_headers(request.headers) or new_trace_context()
+        result = await process_odds(data, trace_id)
+        return {"status": "accepted", "result": result, "trace_id": trace_id}
     except Exception as e:
         logger.exception("Error ingesting odds")
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 
-@app.post("/ingest/settlement")
+@app.post("/ingest/settlement", dependencies=[Depends(verify_api_key)])
 async def ingest_settlement(request: Request):
     """Manual settlement ingestion endpoint."""
     try:
         data = await request.json()
-        result = await process_settlement(data)
-        return {"status": "accepted", "result": result}
+        trace_id = extract_trace_id_from_headers(request.headers) or new_trace_context()
+        result = await process_settlement(data, trace_id)
+        return {"status": "accepted", "result": result, "trace_id": trace_id}
     except Exception as e:
         logger.exception("Error ingesting settlement")
         return JSONResponse(status_code=500, content={"error": str(e)})
@@ -219,39 +297,38 @@ async def ingest_settlement(request: Request):
 async def handle_odds_message(message: dict):
     """Callback invoked by WebSocketClient for each incoming odds message."""
     logger.debug(f"Received odds message: {message.get('eventId', 'unknown')}")
-    await process_odds(message)
+    trace_id = new_trace_context()
+    await process_odds(message, trace_id)
 
 
 async def handle_event_message(message: dict):
     """Callback invoked by RESTPoller for each fetched event."""
     logger.debug(f"Received event message: {message.get('id', 'unknown')}")
-    await process_event(message)
+    trace_id = new_trace_context()
+    await process_event(message, trace_id)
 
 
 async def handle_settlement_message(message: dict):
     """Callback invoked by RESTPoller for each fetched settlement."""
     logger.debug(f"Received settlement message: {message.get('eventId', 'unknown')}")
-    await process_settlement(message)
+    trace_id = new_trace_context()
+    await process_settlement(message, trace_id)
 
 
-async def process_odds(data: dict) -> dict:
+async def process_odds(data: dict, trace_id: Optional[str] = None) -> dict:
     """Run one odds item through validate → transform → deduplicate → forward.
 
     WHAT: Validates against the "odds" schema, transforms to canonical odds, dedups on
         odds:{providerId}:{eventId}:{sequence}, then forwards to n8n. Returns a status dict.
     WHY: This is the core per-item pipeline for the highest-volume feed. Each stage is a gate:
         invalid data is rejected, duplicates are dropped, only clean canonical odds reach n8n.
-    INPUTS: data (raw provider odds dict).
-    OUTPUTS: dict with status in {"processed","rejected","duplicate"} plus eventId/reason/errors.
+    INPUTS: data (raw provider odds dict), trace_id (optional distributed trace ID).
+    OUTPUTS: dict with status in {"processed","rejected","duplicate"} plus eventId/reason/errors/trace_id.
     SIDE EFFECTS: writes to Redis (dedup), calls schema_validator/canonical_transformer,
-        forwards an HTTP webhook to n8n.
-    FAILURE MODES: n8n forward failure is logged and swallowed (data dropped — see GAP).
+        forwards an HTTP webhook to n8n with X-Trace-ID header.
+    FAILURE MODES: n8n forward failure is retried then DLQ'd (no silent drop).
     ALTERNATIVE: enqueue to a reliable queue (Redis Streams/Kafka) instead of a direct webhook,
-        so a n8n outage doesn't lose data. Chosen direct webhook for simplicity in this project.
-    # GAP: forward_to_n8n catches all exceptions and just logs — no dead-letter queue, no retry.
-    #    A n8n outage loses odds. See 07_issues_found.md.
-    # BUSINESS: odds feed every 500ms-2s; losing a price update means a stale market and
-    #    potential trading loss.
+        so a n8n outage doesn't lose data. Chosen direct webhook with DLQ for this project.
     """
     settings = get_settings()
 
@@ -267,21 +344,24 @@ async def process_odds(data: dict) -> dict:
     else:
         canonical = data
 
+    # Inject trace ID into canonical payload for end-to-end propagation
+    canonical["trace_id"] = trace_id
+
     # Deduplicate
     if deduplicator:
         is_duplicate = await deduplicator.check_and_store(
             f"odds:{canonical.get('providerId')}:{canonical.get('eventId')}:{canonical.get('sequence')}"
         )
         if is_duplicate:
-            return {"status": "duplicate", "eventId": canonical.get('eventId')}
+            return {"status": "duplicate", "eventId": canonical.get('eventId'), "trace_id": trace_id}
 
     # Forward to n8n webhook
-    await forward_to_n8n("odds", canonical)
+    await forward_to_n8n("odds", canonical, trace_id)
 
-    return {"status": "processed", "eventId": canonical.get('eventId')}
+    return {"status": "processed", "eventId": canonical.get('eventId'), "trace_id": trace_id}
 
 
-async def process_event(data: dict) -> dict:
+async def process_event(data: dict, trace_id: Optional[str] = None) -> dict:
     """Run one event item through validate → transform → deduplicate → forward."""
     settings = get_settings()
 
@@ -297,21 +377,24 @@ async def process_event(data: dict) -> dict:
     else:
         canonical = data
 
+    # Inject trace ID into canonical payload for end-to-end propagation
+    canonical["trace_id"] = trace_id
+
     # Deduplicate
     if deduplicator:
         is_duplicate = await deduplicator.check_and_store(
             f"event:{canonical.get('id')}:{canonical.get('sequence', 0)}"
         )
         if is_duplicate:
-            return {"status": "duplicate", "eventId": canonical.get('id')}
+            return {"status": "duplicate", "eventId": canonical.get('id'), "trace_id": trace_id}
 
     # Forward to n8n webhook
-    await forward_to_n8n("event", canonical)
+    await forward_to_n8n("event", canonical, trace_id)
 
-    return {"status": "processed", "eventId": canonical.get('id')}
+    return {"status": "processed", "eventId": canonical.get('id'), "trace_id": trace_id}
 
 
-async def process_settlement(data: dict) -> dict:
+async def process_settlement(data: dict, trace_id: Optional[str] = None) -> dict:
     """Run one settlement item through validate → transform → deduplicate → forward."""
     settings = get_settings()
 
@@ -327,49 +410,120 @@ async def process_settlement(data: dict) -> dict:
     else:
         canonical = data
 
+    # Inject trace ID into canonical payload for end-to-end propagation
+    canonical["trace_id"] = trace_id
+
     # Deduplicate
     if deduplicator:
         is_duplicate = await deduplicator.check_and_store(
             f"settlement:{canonical.get('eventId')}:{canonical.get('marketId')}:{canonical.get('selectionId')}"
         )
         if is_duplicate:
-            return {"status": "duplicate", "eventId": canonical.get('eventId')}
+            return {"status": "duplicate", "eventId": canonical.get('eventId'), "trace_id": trace_id}
 
     # Forward to n8n webhook
-    await forward_to_n8n("settlement", canonical)
+    await forward_to_n8n("settlement", canonical, trace_id)
 
-    return {"status": "processed", "eventId": canonical.get('eventId')}
+    return {"status": "processed", "eventId": canonical.get('eventId'), "trace_id": trace_id}
 
 
-async def forward_to_n8n(data_type: str, data: dict):
+async def forward_to_n8n(data_type: str, data: dict, trace_id: Optional[str] = None):
     """POST the canonical payload to the n8n webhook for this data type.
 
-    WHAT: httpx.AsyncClient POST to {n8n_webhook_url}/{data_type} with a 10s timeout.
+    WHAT: httpx.AsyncClient POST to {n8n_webhook_url}/{data_type} with a 10s timeout, retried
+        with exponential backoff up to n8n_max_retries attempts. Injects X-Trace-ID header
+        from trace_id for distributed tracing. On total failure, writes the payload to the
+        dead-letter queue (Redis list dlq:n8n:{data_type}) instead of silently dropping data.
     WHY: n8n is the orchestration layer — once data is validated/normalized/deduped here, it's
-        handed to n8n for event routing, odds normalization, settlement, and alerting.
-    INPUTS: data_type ("odds"|"event"|"settlement"), data (canonical dict).
+        handed to n8n for event routing, odds normalization, settlement, and alerting. A n8n
+        outage must not lose data, and every forwarded request carries the trace ID so
+        n8n and processing-engine can continue the distributed trace.
+    INPUTS: data_type ("odds"|"event"|"settlement"), data (canonical dict),
+        trace_id (optional distributed trace ID).
     OUTPUTS: None.
-    SIDE EFFECTS: makes an outbound HTTP request to n8n.
-    FAILURE MODES: any exception (n8n down, timeout, DNS) is caught, logged, and swallowed —
-        data is silently dropped (see GAP).
-    ALTERNATIVE: push to Redis Streams with a dead-letter queue and retry, so n8n outages
-        don't lose data. Chosen direct webhook for simplicity.
-    # GAP: no dead-letter queue or retry — a n8n outage loses every event forwarded in that
-    #    window. See 07_issues_found.md.
+    SIDE EFFECTS: makes outbound HTTP request(s) to n8n; may write to Redis DLQ.
+    FAILURE MODES: if all retries fail and the DLQ Redis client is unavailable, the error is
+        logged and the data is dropped (fail-open, same pattern as the Deduplicator).
     """
     settings = get_settings()
-    import httpx
 
+    headers = {"Content-Type": "application/json"}
+    headers.update(trace_id_header(trace_id))
+
+    last_error = None
+    for attempt in range(settings.n8n_max_retries):
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                await client.post(
+                    f"{settings.n8n_webhook_url}/{data_type}",
+                    json=data,
+                    headers=headers,
+                )
+            return  # success
+        except Exception as e:
+            last_error = e
+            if attempt < settings.n8n_max_retries - 1:
+                await asyncio.sleep(settings.n8n_retry_backoff * (2 ** attempt))
+
+    # All retries exhausted — dead letter queue
+    await _write_to_dlq(data_type, data, last_error)
+
+
+async def _write_to_dlq(data_type: str, data: dict, error: Exception):
+    """Write a failed forward to the DLQ Redis list (fail-open: log if unavailable)."""
+    settings = get_settings()
+    if dlq_redis is None:
+        logger.error(f"DLQ unavailable, dropping {data_type}: {error}")
+        return
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            await client.post(
-                f"{settings.n8n_webhook_url}/{data_type}",
-                json=data,
-                headers={"Content-Type": "application/json"},
-            )
+        key = f"{settings.dlq_redis_key_prefix}{data_type}"
+        payload = json.dumps(
+            {"data": data, "error": str(error), "data_type": data_type}
+        )
+        await dlq_redis.rpush(key, payload)
+        logger.warning(
+            f"Wrote {data_type} to DLQ {key} after retries exhausted: {error}"
+        )
     except Exception as e:
-        logger.error(f"Failed to forward to n8n: {e}")
-        # In production, send to dead letter queue
+        logger.error(f"Failed to write to DLQ for {data_type}: {e}")
+
+
+@app.post("/dlq/retry")
+async def retry_dlq(data_type: str):
+    """Reprocess items from the dead-letter queue for a given data type.
+
+    WHAT: POST /dlq/retry?data_type=odds pops items from dlq:n8n:{data_type} and re-forwards
+        each to n8n. Successfully reprocessed items are consumed; a failing item is put back
+        and the retry stops (poison-message protection).
+    WHY: Provides an operational escape hatch to recover data after a n8n outage.
+    INPUTS: data_type (query param, e.g. "odds"|"event"|"settlement").
+    OUTPUTS: {status, reprocessed, data_type}.
+    SIDE EFFECTS: pops from Redis DLQ, re-forwards to n8n, may re-push on failure.
+    FAILURE MODES: DLQ unavailable -> 503.
+    """
+    settings = get_settings()
+    if dlq_redis is None:
+        raise HTTPException(status_code=503, detail="DLQ unavailable")
+    key = f"{settings.dlq_redis_key_prefix}{data_type}"
+    reprocessed = 0
+    max_items = 100
+    while reprocessed < max_items:
+        raw = await dlq_redis.lpop(key)
+        if raw is None:
+            break
+        try:
+            payload = json.loads(raw)
+            item_data = payload.get("data", payload) if isinstance(payload, dict) else raw
+            await forward_to_n8n(
+                data_type, item_data, item_data.get("trace_id") if isinstance(item_data, dict) else None
+            )
+            reprocessed += 1
+        except Exception as e:
+            # Put it back and stop — don't loop forever on a poison message
+            await dlq_redis.rpush(key, raw)
+            logger.error(f"DLQ retry failed for {data_type}: {e}")
+            break
+    return {"status": "ok", "reprocessed": reprocessed, "data_type": data_type}
 
 
 if __name__ == "__main__":

@@ -175,7 +175,8 @@ class CanonicalEvent(BaseModel):
             start_time=datetime(2026, 11, 10, 15, 0),
             status=EventStatus.SCHEDULED,
             score=Score(home=0, away=0),
-            metadata={}
+            metadata={},
+            trace_id="trace_abc123"
         )
     INPUTS/OUTPUTS: instantiated by canonical_transformer.transform_event; consumed by
         SettlementWorker n8n node and schema validation.
@@ -192,6 +193,7 @@ class CanonicalEvent(BaseModel):
     status: EventStatus
     score: Optional[Score] = None
     metadata: Dict[str, Any] = Field(default_factory=dict)
+    trace_id: Optional[str] = None
 
 
 class CanonicalOdds(BaseModel):
@@ -220,6 +222,7 @@ class CanonicalOdds(BaseModel):
     format: OddsFormat
     timestamp: datetime
     sequence: int
+    trace_id: Optional[str] = None
 
 
 class SettlementResult(BaseModel):
@@ -244,6 +247,7 @@ class SettlementResult(BaseModel):
     settled_at: datetime
     source: str  # 'official' | 'manual' | 'auto_reconciled'
     confidence: float = Field(ge=0, le=1)
+    trace_id: Optional[str] = None
 
 
 class Alert(BaseModel):
@@ -270,6 +274,7 @@ class Alert(BaseModel):
     created_at: datetime
     acknowledged_at: Optional[datetime] = None
     resolved_at: Optional[datetime] = None
+    trace_id: Optional[str] = None
 
 
 class Discrepancy(BaseModel):
@@ -304,6 +309,7 @@ class ReconciliationReport(BaseModel):
     discrepancies: List[Discrepancy]
     auto_corrected: int
     manual_review_required: int
+    trace_id: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
