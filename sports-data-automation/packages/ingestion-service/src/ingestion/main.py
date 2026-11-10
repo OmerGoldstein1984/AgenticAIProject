@@ -55,6 +55,7 @@ from ingestion.normalization.schema_validator import SchemaValidator
 from ingestion.normalization.canonical_transformer import CanonicalTransformer
 from ingestion.idempotency.deduplicator import Deduplicator
 from ingestion.metrics import setup_metrics, metrics_middleware
+from ingestion.security import RateLimiter, SecurityHeadersMiddleware, rate_limit_middleware, log_auth_failure
 from ingestion.tracing import extract_trace_id_from_headers, new_trace_context, trace_id_header
 
 # Configure logging
@@ -71,21 +72,24 @@ schema_validator: SchemaValidator | None = None
 canonical_transformer: CanonicalTransformer | None = None
 deduplicator: Deduplicator | None = None
 n8n_forwarder: Optional[N8nForwarder] = None
+rate_limiter: Optional[RateLimiter] = None
 
 # API key header for /ingest/* authentication
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 
 
-async def verify_api_key(api_key: str | None = Security(api_key_header)):
+async def verify_api_key(request: Request, api_key: str | None = Security(api_key_header)):
     """Require X-API-Key on /ingest/* endpoints when ingestion_api_key is configured.
 
     Health and metrics endpoints remain unauthenticated. If no API key is configured
-    (empty setting), the check is skipped (fail-open/dev-friendly).
+    (empty setting), the check is skipped (fail-open/dev-friendly). Failed attempts
+    are recorded in the security audit log.
     """
     settings = get_settings()
     if not settings.ingestion_api_key:
         return
     if api_key is None or api_key != settings.ingestion_api_key:
+        log_auth_failure(api_key, request.url.path, reason="missing_or_invalid_api_key")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or missing API key",
@@ -116,6 +120,26 @@ async def lifespan(app: FastAPI):
     global websocket_client, rest_poller, schema_validator, canonical_transformer, deduplicator, n8n_forwarder
 
     settings = get_settings()
+
+    # Rate limiter for write endpoints (/ingest/*, /dlq/*). None when disabled.
+    global rate_limiter
+    if settings.rate_limit_enabled:
+        rate_limiter = RateLimiter(
+            requests_per_minute=settings.rate_limit_requests_per_minute,
+            burst=settings.rate_limit_burst,
+            anonymous_requests_per_minute=settings.rate_limit_anonymous_per_minute,
+            anonymous_burst=settings.rate_limit_anonymous_burst,
+        )
+        logger.info(
+            "Rate limiter enabled: %d rpm/%d burst (auth), %d rpm/%d burst (anonymous)",
+            settings.rate_limit_requests_per_minute,
+            settings.rate_limit_burst,
+            settings.rate_limit_anonymous_per_minute,
+            settings.rate_limit_anonymous_burst,
+        )
+    else:
+        rate_limiter = None
+        logger.info("Rate limiter disabled")
 
     # Initialize services
     logger.info("Initializing ingestion service...")
@@ -230,6 +254,25 @@ app.add_middleware(
 
 # Metrics middleware (records HTTP request count + duration for every request)
 app.middleware("http")(metrics_middleware)
+
+# Security response headers on every response (CORS already configured above).
+app.add_middleware(
+    SecurityHeadersMiddleware,
+    enabled=settings.security_headers_enabled,
+    hsts_enabled=settings.hsts_enabled,
+    hsts_max_age=settings.hsts_max_age,
+)
+
+# Rate limiting + request body size guard on write endpoints (/ingest/*, /dlq/*).
+@app.middleware("http")
+async def security_request_middleware(request: Request, call_next):
+    return await rate_limit_middleware(
+        request,
+        call_next,
+        rate_limiter,
+        enabled=settings.rate_limit_enabled,
+        max_body_size=settings.max_request_body_size,
+    )
 
 # Setup Prometheus metrics endpoint at /metrics
 setup_metrics(app)
